@@ -1,14 +1,33 @@
 {
   "name": "chorraha-boshqaruvi",
-  "version": "0.1.0",
-  "description": "Traffic Puzzle — izometrik chorraha boshqaruvi o'yini (engine + prototip)",
+  "version": "2.0.0",
+  "description": "Chorraha Boshqaruvi (Traffic Puzzle) — izometrik chorraha boshqotirmasi: deterministik qoidalar yadrosi, 50 bosqich, garaj, Supabase sinxronizatsiya",
   "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "serve": "node -e \"import('http').then(h=>import('fs').then(f=>import('path').then(p=>h.createServer((q,s)=>{let u=q.url==='/'?'/index.html':q.url;let fp=p.join(process.cwd(),u.split('?')[0]);f.readFile(fp,(e,d)=>{if(e){s.writeCode?0:0;s.writeHead(404);return s.end('404')}const t={'.html':'text/html','.js':'text/javascript','.css':'text/css','.map':'application/json'}[p.extname(fp)]||'text/plain';s.writeHead(200,{'Content-Type':t});s.end(d)})}).listen(8080,()=>console.log('http://localhost:8080')))))\"",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node tests/engine.test.mjs"
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.edge.json",
+    "campaign": "npm run build && node scripts/build-campaign.mjs && npm run build",
+    "test": "npm run build && node scripts/build-edge.mjs && tsc -p tsconfig.edge.json && node --test --experimental-strip-types --test-timeout=60000 tests/*.test.mjs",
+    "serve": "node scripts/serve.mjs",
+    "start": "npm run build && node scripts/serve.mjs",
+    "build:edge": "npm run build && node scripts/build-edge.mjs",
+    "e2e": "node scripts/e2e.mjs",
+    "perf": "node scripts/perf.mjs"
   },
-  "keywords": ["game", "traffic", "puzzle", "isometric", "typescript"],
+  "devDependencies": {
+    "typescript": "7.0.2"
+  },
+  "keywords": [
+    "game",
+    "traffic",
+    "puzzle",
+    "isometric",
+    "typescript",
+    "supabase"
+  ],
   "license": "MIT"
 }

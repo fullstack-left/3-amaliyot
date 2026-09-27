@@ -1,260 +1,346 @@
 /**
- * The Game Engine — orchestrates the simulation.
- * =============================================
+ * GameEngine — deterministic 60 Hz simulation.
+ * ============================================
  *
- * Responsibilities:
- *   - Advance the deterministic clock (drives lights + controller).
- *   - Animate CROSSING vehicles (progress 0→1) and retire them.
- *   - Promote the next car in a queue once the front car leaves (QUEUE MGMT).
- *   - Turn a player TAP into either a legal crossing or a collision/penalty,
- *     using the pure Rule Validation Engine.
- *   - Emit typed events (GameEvent) that the UI/audio layer subscribes to.
+ * Owns the hot, per-tick state: vehicles, lanes (queues), clock, lives.
+ * Exposes two intents:
+ *   - tap(id)  → validates with canVehicleMove, then departs / penalises
+ *   - step()   → advances exactly one tick (1/60 s)
+ * and emits typed EngineEvents for UI / audio / analytics.
  *
- * The engine keeps its own IntersectionState and exposes intent methods
- * (`tap`, `update`). It NEVER touches the DOM/UI directly — it only emits
- * events. This is what makes it portable to React Native / Flutter.
+ * The engine implements IntersectionState, so it can be handed directly to the
+ * pure rule functions. It never touches the DOM.
+ *
+ * Replay contract: a tap recorded as [t, id] is applied when engine.tick === t,
+ * before the next step(). Same taps ⇒ same outcome, on any platform.
  */
 
-import { canVehicleMove } from './rules.js';
-import { controllerPoseAt } from './controller.js';
+import { DIRS, exitOf, movementIndex } from './dir.js';
+import { DESPAWN_U, getJunction, type JunctionGeometry } from './junction.js';
 import {
-  hydrateLevel,
-  isLevelComplete,
-  remainingVehicles,
-} from './level.js';
+  distAt,
+  Q_ACCEL,
+  Q_DECEL,
+  Q_GAP,
+  Q_MIN_GAP,
+  Q_VMAX,
+  TICK_HZ,
+  ticksToMs,
+} from './kinematics.js';
+import type { Level } from './level.js';
+import { poseAt, type ActivePose } from './controller.js';
 import {
-  Direction,
-  IntersectionState,
-  LevelDefinition,
-  MoveDecision,
-  Vehicle,
-  VehicleState,
-} from './types.js';
+  canVehicleMove,
+  regulationMode,
+  type IntersectionState,
+  type Layout,
+  type MoveDecision,
+  type Reason,
+} from './rules.js';
+import { aspectAt, ticksUntilChange } from './signals.js';
+import type { Aspect, Dir, RegulationMode, Vehicle } from './types.js';
+import { computeStars } from './scoring.js';
+import { HERO_BONUS, VEHICLE_SPECS } from './vehicles.js';
 
-/** How long (ms) a vehicle takes to cross the intersection. */
-const CROSS_DURATION_MS = 900;
-/** How long the crash/penalty freeze lasts before recovery. */
-const CRASH_RECOVERY_MS = 1200;
+export const LOCK_TICKS = 40;
+export const FLASH_TICKS = 78;
 
-export type GameEvent =
-  | { type: 'MOVE_STARTED'; vehicleId: string }
-  | { type: 'MOVE_COMPLETED'; vehicleId: string; coinsAwarded: number }
-  | {
-      type: 'COLLISION';
-      vehicleId: string;
-      decision: MoveDecision;
-      livesRemaining: number;
-    }
-  | { type: 'ILLEGAL_TAP'; vehicleId: string; decision: MoveDecision } // denied w/o crash (e.g. red light)
-  | { type: 'LEVEL_COMPLETE'; coins: number; timeMs: number }
-  | { type: 'GAME_OVER' };
-
-export interface EngineStatus {
-  lives: number;
-  coins: number;
-  elapsedMs: number;
-  crossingCount: number;
-  remaining: number;
-  isComplete: boolean;
-  isGameOver: boolean;
-  controllerPose?: string;
+export interface LevelResult {
+  readonly levelId: number;
+  readonly completed: boolean;
+  readonly ticks: number;
+  readonly timeMs: number;
+  readonly mistakes: number;
+  readonly livesLeft: number;
+  readonly cleared: number;
+  readonly total: number;
+  readonly vehicleCoins: number;
+  readonly stars: number;
+  readonly parMs: number;
 }
 
-type Listener = (e: GameEvent) => void;
+export type EngineEvent =
+  | { readonly type: 'depart'; readonly id: string; readonly tick: number; readonly deadlock: boolean }
+  | { readonly type: 'blocked'; readonly id: string; readonly reason: Reason; readonly tick: number }
+  | {
+      readonly type: 'penalty';
+      readonly id: string;
+      readonly reason: Reason;
+      readonly culprits: readonly string[];
+      readonly lives: number;
+      readonly tick: number;
+    }
+  | { readonly type: 'cleared'; readonly id: string; readonly coins: number; readonly tick: number }
+  | { readonly type: 'arrive'; readonly id: string; readonly tick: number }
+  | { readonly type: 'won'; readonly result: LevelResult }
+  | { readonly type: 'lost'; readonly result: LevelResult };
 
-export class GameEngine {
-  state: IntersectionState;
+export interface EngineOptions {
+  /** Override the level's par time (ms) used for the "fast" star. */
+  parMs?: number;
+}
+
+export type EngineStatus = 'playing' | 'won' | 'lost';
+
+export class GameEngine implements IntersectionState {
+  tick = 0;
+  readonly level: Level;
+  readonly layout: Layout;
+  readonly junction: JunctionGeometry;
+  readonly vehicles: Vehicle[] = [];
+  readonly queues: Vehicle[][] = [[], [], [], []];
+  readonly byId = new Map<string, Vehicle>();
+  /** State-changing taps only (go / violation) — this IS the replay. */
+  readonly taps: [number, string][] = [];
+  readonly parMs: number;
+
   lives: number;
-  coins = 0;
-  private crashTimers = new Map<string, number>();
-  private listeners = new Set<Listener>();
-  private complete = false;
-  private gameOver = false;
-  private levelDef: LevelDefinition;
+  mistakes = 0;
+  cleared = 0;
+  vehicleCoins = 0;
+  status: EngineStatus = 'playing';
+  endTick = -1;
 
-  constructor(level: LevelDefinition) {
-    this.levelDef = level;
-    this.state = hydrateLevel(level);
+  private readonly pending: Vehicle[] = [];
+  private readonly lastDeparted: (Vehicle | null)[] = [null, null, null, null];
+  private readonly listeners: ((e: EngineEvent) => void)[] = [];
+
+  constructor(level: Level, opts: EngineOptions = {}) {
+    this.level = level;
+    this.layout = level.layout;
+    this.junction = getJunction(level.layout.geometry);
     this.lives = level.lives;
-  }
+    this.parMs = opts.parMs ?? level.parMs ?? Number.POSITIVE_INFINITY;
 
-  // --- pub/sub ----------------------------------------------------------
-  subscribe(fn: Listener): () => void {
-    this.listeners.add(fn);
-    return () => this.listeners.delete(fn);
-  }
-  private emit(e: GameEvent) {
-    for (const l of this.listeners) l(e);
-  }
-
-  // --- introspection ----------------------------------------------------
-  getVehicles(): Vehicle[] {
-    return Object.values(this.state.vehicles);
-  }
-
-  status(): EngineStatus {
-    return {
-      lives: this.lives,
-      coins: this.coins,
-      elapsedMs: this.state.clockMs,
-      crossingCount: this.getVehicles().filter(
-        (v) => v.state === VehicleState.CROSSING,
-      ).length,
-      remaining: remainingVehicles(this.state).length,
-      isComplete: this.complete,
-      isGameOver: this.gameOver,
-      controllerPose: controllerPoseAt(this.state)?.name,
-    };
-  }
-
-  /** Preview decision without committing — used to draw hints/tooltips. */
-  preview(vehicleId: string): MoveDecision {
-    return canVehicleMove(vehicleId, this.state);
-  }
-
-  // --- player intent ----------------------------------------------------
-  /**
-   * Handle a player tap on a vehicle.
-   * Legal → the vehicle starts CROSSING.
-   * Illegal + real path conflict → COLLISION (lose a life).
-   * Illegal but harmless (red light, not-at-front) → ILLEGAL_TAP (no penalty).
-   */
-  tap(vehicleId: string): void {
-    if (this.gameOver || this.complete) return;
-    const v = this.state.vehicles[vehicleId];
-    if (!v) return;
-
-    const decision = canVehicleMove(vehicleId, this.state);
-    if (decision.allowed) {
-      v.state = VehicleState.CROSSING;
-      v.progress = 0;
-      this.emit({ type: 'MOVE_STARTED', vehicleId });
-      return;
+    for (const sp of level.spawns) {
+      const spec = VEHICLE_SPECS[sp.kind];
+      const v: Vehicle = {
+        id: sp.id,
+        idx: sp.idx,
+        kind: sp.kind,
+        from: sp.from,
+        turn: sp.turn,
+        to: exitOf(sp.from, sp.turn),
+        move: movementIndex(sp.from, sp.turn),
+        length: spec.length,
+        width: spec.width,
+        emergency: spec.emergency,
+        hero: sp.hero,
+        spawnTick: sp.initial ? 0 : sp.atTick,
+        state: sp.initial ? 'queued' : 'hidden',
+        u: DESPAWN_U,
+        speed: 0,
+        s: 0,
+        startTick: -1,
+        flashUntil: -1,
+        lockUntil: -1,
+        clearedTick: -1,
+      };
+      this.vehicles.push(v);
+      this.byId.set(v.id, v);
+      if (sp.initial) this.queues[sp.from].push(v);
+      else this.pending.push(v);
     }
+    this.pending.sort((a, b) => a.spawnTick - b.spawnTick || a.idx - b.idx);
 
-    // Denied. If the denial involves conflicting vehicles present in the
-    // intersection, it's a crash (penalty). Otherwise it's a soft illegal tap.
-    if (decision.conflictsWith.length > 0) {
-      this.triggerCollision(v, decision);
-    } else {
-      this.emit({ type: 'ILLEGAL_TAP', vehicleId, decision });
-    }
-  }
-
-  private triggerCollision(v: Vehicle, decision: MoveDecision) {
-    v.state = VehicleState.CRASHED;
-    this.crashTimers.set(v.id, CRASH_RECOVERY_MS);
-    for (const otherId of decision.conflictsWith) {
-      const o = this.state.vehicles[otherId];
-      if (o && (o.state === VehicleState.WAITING || o.state === VehicleState.CROSSING)) {
-        o.state = VehicleState.CRASHED;
-        this.crashTimers.set(o.id, CRASH_RECOVERY_MS);
-      }
-    }
-    this.lives -= 1;
-    this.emit({
-      type: 'COLLISION',
-      vehicleId: v.id,
-      decision,
-      livesRemaining: this.lives,
-    });
-    if (this.lives <= 0) {
-      this.gameOver = true;
-      this.emit({ type: 'GAME_OVER' });
-    }
-  }
-
-  // --- simulation step --------------------------------------------------
-  /**
-   * Advance the world by `dtMs`. Call from a rAF/game loop with the frame
-   * delta. Deterministic given the same dt sequence.
-   */
-  update(dtMs: number): void {
-    if (this.gameOver || this.complete) return;
-    this.state.clockMs += dtMs;
-
-    // 1) progress crossing vehicles
-    for (const v of this.getVehicles()) {
-      if (v.state === VehicleState.CROSSING) {
-        v.progress += dtMs / CROSS_DURATION_MS;
-        if (v.progress >= 1) {
-          v.progress = 1;
-          v.state = VehicleState.CLEARED;
-          const award = this.coinReward(v);
-          this.coins += award;
-          this.emit({ type: 'MOVE_COMPLETED', vehicleId: v.id, coinsAwarded: award });
-          this.promoteQueue(v.from);
-        }
-      }
-    }
-
-    // 2) tick crash recovery timers
-    for (const [id, remaining] of Array.from(this.crashTimers.entries())) {
-      const left = remaining - dtMs;
-      if (left <= 0) {
-        this.crashTimers.delete(id);
-        const v = this.state.vehicles[id];
-        if (v && v.state === VehicleState.CRASHED) {
-          // Recovered crashed cars go back to waiting/queued as appropriate.
-          v.progress = 0;
-          v.state = v.queueIndex === 0 ? VehicleState.WAITING : VehicleState.QUEUED;
-        }
-      } else {
-        this.crashTimers.set(id, left);
-      }
-    }
-
-    // 3) completion check
-    if (!this.gameOver && isLevelComplete(this.state)) {
-      this.complete = true;
-      this.emit({
-        type: 'LEVEL_COMPLETE',
-        coins: this.coins,
-        timeMs: this.state.clockMs,
+    const stopU = this.layout.stopU;
+    for (const d of DIRS) {
+      let u = stopU;
+      this.queues[d].forEach((v, k) => {
+        v.u = u;
+        v.state = k === 0 ? 'waiting' : 'queued';
+        u += v.length + Q_GAP;
       });
     }
   }
 
-  /**
-   * QUEUE MANAGEMENT: when the front car of an approach clears, shift the
-   * remaining cars forward and promote the new front car to WAITING.
-   */
-  private promoteQueue(from: Direction): void {
-    const queue = this.getVehicles()
-      .filter(
-        (v) =>
-          v.from === from &&
-          (v.state === VehicleState.QUEUED || v.state === VehicleState.WAITING),
-      )
-      .sort((a, b) => a.queueIndex - b.queueIndex);
-
-    queue.forEach((v, idx) => {
-      v.queueIndex = idx;
-      v.state = idx === 0 ? VehicleState.WAITING : VehicleState.QUEUED;
-    });
+  // --- events ----------------------------------------------------------------
+  on(fn: (e: EngineEvent) => void): () => void {
+    this.listeners.push(fn);
+    return () => {
+      const i = this.listeners.indexOf(fn);
+      if (i >= 0) this.listeners.splice(i, 1);
+    };
   }
 
-  private coinReward(v: Vehicle): number {
-    // Emergency/heavy vehicles are worth a little more — small economy hook.
-    switch (v.kind) {
-      case 'AMBULANCE':
-      case 'FIRE_TRUCK':
-        return 15;
-      case 'BUS':
-      case 'TRUCK':
-        return 8;
-      default:
-        return 5;
+  private emit(e: EngineEvent): void {
+    for (const l of this.listeners) l(e);
+  }
+
+  // --- queries (renderer / HUD) ---------------------------------------------
+  get total(): number {
+    return this.vehicles.length;
+  }
+
+  mode(): RegulationMode {
+    return regulationMode(this.layout, this.tick);
+  }
+
+  aspect(d: Dir): Aspect | null {
+    return this.layout.signals ? aspectAt(this.layout.signals, d, this.tick) : null;
+  }
+
+  aspectCountdown(d: Dir): number {
+    return this.layout.signals ? ticksUntilChange(this.layout.signals, d, this.tick) : 0;
+  }
+
+  pose(): ActivePose | null {
+    return this.layout.controller ? poseAt(this.layout.controller, this.tick) : null;
+  }
+
+  preview(id: string): MoveDecision {
+    return canVehicleMove(id, this);
+  }
+
+  timeMs(): number {
+    return ticksToMs(this.endTick >= 0 ? this.endTick : this.tick);
+  }
+
+  result(): LevelResult {
+    const ticks = this.endTick >= 0 ? this.endTick : this.tick;
+    const timeMs = ticksToMs(ticks);
+    const completed = this.status === 'won';
+    return {
+      levelId: this.level.id,
+      completed,
+      ticks,
+      timeMs,
+      mistakes: this.mistakes,
+      livesLeft: this.lives,
+      cleared: this.cleared,
+      total: this.vehicles.length,
+      vehicleCoins: this.vehicleCoins,
+      stars: completed ? computeStars(this.mistakes, timeMs, this.parMs) : 0,
+      parMs: this.parMs,
+    };
+  }
+
+  // --- intent: tap ----------------------------------------------------------
+  tap(id: string): MoveDecision {
+    const d = canVehicleMove(id, this);
+    if (this.status !== 'playing') return { ...d, allowed: false, verdict: 'wait', reason: 'not_ready' };
+    const v = this.byId.get(id);
+    if (!v) return d;
+
+    if (d.verdict === 'go') {
+      this.taps.push([this.tick, id]);
+      v.state = 'crossing';
+      v.startTick = this.tick;
+      v.s = 0;
+      v.speed = 0;
+      const q = this.queues[v.from];
+      const i = q.indexOf(v);
+      if (i >= 0) q.splice(i, 1);
+      this.lastDeparted[v.from] = v;
+      this.emit({ type: 'depart', id, tick: this.tick, deadlock: d.deadlock });
+    } else if (d.verdict === 'violation') {
+      this.taps.push([this.tick, id]);
+      this.lives--;
+      this.mistakes++;
+      v.lockUntil = this.tick + LOCK_TICKS;
+      v.flashUntil = this.tick + FLASH_TICKS;
+      for (const c of d.culprits) {
+        const o = this.byId.get(c);
+        if (o) o.flashUntil = this.tick + FLASH_TICKS;
+      }
+      this.emit({ type: 'penalty', id, reason: d.reason!, culprits: d.culprits, lives: this.lives, tick: this.tick });
+      if (this.lives <= 0) {
+        this.status = 'lost';
+        this.endTick = this.tick;
+        this.emit({ type: 'lost', result: this.result() });
+      }
+    } else {
+      this.emit({ type: 'blocked', id, reason: d.reason!, tick: this.tick });
+    }
+    return d;
+  }
+
+  // --- simulation -----------------------------------------------------------
+  step(): void {
+    if (this.status !== 'playing') return;
+    const t = ++this.tick;
+
+    while (this.pending.length > 0 && this.pending[0].spawnTick <= t) this.spawn(this.pending.shift()!);
+
+    for (const v of this.vehicles) {
+      if (v.state !== 'crossing' && v.state !== 'exiting') continue;
+      const path = this.junction.paths[v.move];
+      v.s = distAt((t - v.startTick) / TICK_HZ);
+      if (v.state === 'crossing' && v.s >= this.junction.clearS(v.move)) {
+        v.state = 'exiting';
+        v.clearedTick = t;
+        this.cleared++;
+        const coins = VEHICLE_SPECS[v.kind].coins + (v.hero ? HERO_BONUS : 0);
+        this.vehicleCoins += coins;
+        this.emit({ type: 'cleared', id: v.id, coins, tick: t });
+      }
+      if (v.s >= path.length) {
+        v.s = path.length;
+        v.state = 'gone';
+      }
+    }
+
+    this.updateLanes();
+
+    if (this.cleared === this.vehicles.length) {
+      this.status = 'won';
+      this.endTick = t;
+      this.emit({ type: 'won', result: this.result() });
     }
   }
 
-  /** Restart the current level from scratch. */
-  reset(): void {
-    this.state = hydrateLevel(this.levelDef);
-    this.lives = this.levelDef.lives;
-    this.coins = 0;
-    this.complete = false;
-    this.gameOver = false;
-    this.crashTimers.clear();
+  /** Advance n ticks (stops early when the level ends). */
+  stepMany(n: number): void {
+    for (let i = 0; i < n && this.status === 'playing'; i++) this.step();
+  }
+
+  private spawn(v: Vehicle): void {
+    const q = this.queues[v.from];
+    const back = q[q.length - 1];
+    v.u = Math.max(DESPAWN_U, back ? back.u + back.length + Q_GAP : 0);
+    v.speed = Q_VMAX;
+    v.state = 'queued';
+    q.push(v);
+    this.emit({ type: 'arrive', id: v.id, tick: this.tick });
+  }
+
+  /**
+   * Lane kinematics: every vehicle drives toward its slot (front = stop line,
+   * then one vehicle length + gap per place) with bounded acceleration and a
+   * braking curve, never closer than Q_MIN_GAP to the vehicle ahead — including
+   * the one that just departed while it is still on the incoming lane.
+   */
+  private updateLanes(): void {
+    const dt = 1 / TICK_HZ;
+    const stopU = this.layout.stopU;
+    for (const d of DIRS) {
+      const q = this.queues[d];
+      let target = stopU;
+      let leaderRear = Number.NEGATIVE_INFINITY;
+      const lead = this.lastDeparted[d];
+      if (lead && lead.state === 'crossing') leaderRear = stopU - lead.s + lead.length;
+      for (let k = 0; k < q.length; k++) {
+        const v = q[k];
+        const dist = v.u - target;
+        const desired = dist > 0 ? Math.min(Q_VMAX, Math.sqrt(2 * Q_DECEL * dist)) : 0;
+        v.speed = v.speed < desired ? Math.min(desired, v.speed + Q_ACCEL * dt) : desired;
+        let nu = v.u - v.speed * dt;
+        if (nu < target) nu = target;
+        const minU = leaderRear + Q_MIN_GAP;
+        if (nu < minU) {
+          nu = Math.min(v.u, Math.max(minU, target));
+          v.speed = (v.u - nu) / dt;
+        }
+        v.u = nu;
+        if (v.u - target < 1e-4 && v.speed < 0.05) {
+          v.u = target;
+          v.speed = 0;
+        }
+        if (k === 0) v.state = v.u === target && v.speed === 0 ? 'waiting' : 'approaching';
+        else v.state = 'queued';
+        leaderRear = v.u + v.length;
+        target += v.length + Q_GAP;
+      }
+    }
   }
 }

@@ -1,0 +1,316 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/fullstack-left/3-amaliyot/traffic-puzzle/levels/level.schema.json",
+  "title": "Chorraha Boshqaruvi — LevelDef",
+  "description": "Bosqich formati. Runtime tekshiruvi: src/core/level.ts → validateLevel() (bu schema IDE avto-to'ldirish uchun).",
+  "type": "object",
+  "required": [
+    "id",
+    "name",
+    "band",
+    "junction",
+    "arms"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "band": {
+      "enum": [
+        "base",
+        "complex",
+        "roundabout",
+        "boss"
+      ]
+    },
+    "junction": {
+      "enum": [
+        "cross",
+        "t",
+        "roundabout"
+      ],
+      "description": "cross: 4 yo'l, t: 3 yo'l, roundabout: 3-4 yo'l"
+    },
+    "arms": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 4,
+      "items": {
+        "$ref": "#/definitions/arm"
+      }
+    },
+    "signals": {
+      "$ref": "#/definitions/signals"
+    },
+    "controller": {
+      "$ref": "#/definitions/controller"
+    },
+    "lives": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9,
+      "default": 3
+    },
+    "parMs": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "description": "Tez yulduz chegarasi. Bo'lmasa avtopilot hisoblaydi."
+    },
+    "intro": {
+      "type": "object",
+      "required": [
+        "title",
+        "text"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "title": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      }
+    },
+    "tip": {
+      "type": "string"
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "definitions": {
+    "dir": {
+      "enum": [
+        "N",
+        "E",
+        "S",
+        "W"
+      ]
+    },
+    "spawn": {
+      "type": "object",
+      "required": [
+        "kind",
+        "turn"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "car",
+            "taxi",
+            "bus",
+            "truck",
+            "ambulance",
+            "fire",
+            "police"
+          ]
+        },
+        "turn": {
+          "enum": [
+            "straight",
+            "left",
+            "right"
+          ]
+        },
+        "hero": {
+          "type": "boolean",
+          "description": "O'yinchining garaj mashinasi (+5 tanga)"
+        }
+      }
+    },
+    "arrival": {
+      "type": "object",
+      "required": [
+        "kind",
+        "turn",
+        "atMs"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "car",
+            "taxi",
+            "bus",
+            "truck",
+            "ambulance",
+            "fire",
+            "police"
+          ]
+        },
+        "turn": {
+          "enum": [
+            "straight",
+            "left",
+            "right"
+          ]
+        },
+        "hero": {
+          "type": "boolean"
+        },
+        "atMs": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Bosqich boshlanganidan keyin paydo bo'lish vaqti"
+        }
+      }
+    },
+    "arm": {
+      "type": "object",
+      "required": [
+        "dir",
+        "queue"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "dir": {
+          "$ref": "#/definitions/dir"
+        },
+        "sign": {
+          "enum": [
+            "none",
+            "main",
+            "yield",
+            "stop"
+          ],
+          "default": "none"
+        },
+        "queue": {
+          "type": "array",
+          "maxItems": 7,
+          "items": {
+            "$ref": "#/definitions/spawn"
+          },
+          "description": "Oldingi (stop-chiziqdagi) mashina birinchi"
+        },
+        "arrivals": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/arrival"
+          }
+        }
+      }
+    },
+    "signals": {
+      "type": "object",
+      "required": [
+        "phases"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "phases": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": [
+              "green",
+              "ms"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "green": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/definitions/dir"
+                },
+                "minItems": 1
+              },
+              "ms": {
+                "type": "number",
+                "minimum": 1000
+              }
+            }
+          },
+          "description": "Har bir yo'l aynan bitta fazada yashil bo'lishi kerak"
+        },
+        "amberMs": {
+          "type": "number",
+          "minimum": 0,
+          "default": 2000
+        },
+        "allRedMs": {
+          "type": "number",
+          "minimum": 0,
+          "default": 1000
+        },
+        "offsetMs": {
+          "type": "number",
+          "minimum": 0,
+          "default": 0
+        },
+        "flashing": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "fromMs",
+              "toMs"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "fromMs": {
+                "type": "number",
+                "minimum": 0
+              },
+              "toMs": {
+                "type": "number"
+              }
+            }
+          },
+          "description": "Sariq miltillovchi oraliqlar: svetofor boshqarmaydi, belgilar ishlaydi"
+        }
+      }
+    },
+    "controller": {
+      "type": "object",
+      "required": [
+        "poses"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "poses": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": [
+              "gesture",
+              "facing",
+              "ms"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "gesture": {
+                "enum": [
+                  "arms_side",
+                  "right_forward",
+                  "arm_up"
+                ]
+              },
+              "facing": {
+                "$ref": "#/definitions/dir",
+                "description": "Boshqaruvchining ko'kragi qaragan yo'l"
+              },
+              "ms": {
+                "type": "number",
+                "minimum": 800
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

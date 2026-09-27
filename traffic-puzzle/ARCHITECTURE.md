@@ -1,392 +1,255 @@
-# Chorraha Boshqaruvi (Traffic Puzzle) — Architecture Blueprint
+# Chorraha Boshqaruvi — Architecture (v2)
 
-> Production-ready architecture for a 2D isometric traffic-management puzzle.
-> Target stack: **React Native + TypeScript** (or Flutter) on the client,
-> **Supabase** (Postgres + Auth + Edge Functions) for progression & anti-cheat.
-> This repository ships the **framework-agnostic game core** (pure TypeScript)
-> plus a **runnable browser prototype** so the design is playable today.
+A deterministic traffic-rules puzzle: an isometric intersection, vehicles queued on every arm, and the player taps them one at a time. Legal taps move the vehicle through the junction. Illegal taps cost a life, trigger the traffic-police whistle and flash the involved cars red.
+
+This document covers the four deliverables from the brief: **state management**, the **validation algorithm**, the **level data structure** and **rendering performance**. It also documents the geometry, determinism and anti-cheat design these depend on.
 
 ---
 
-## 0. Guiding principles
+## 1. Principles
 
-1. **Rules as data + pure functions.** Every road rule is a pure, deterministic
-   function over serialisable state. The *same* `canVehicleMove()` runs on the
-   client (optimistic UX) and can be re-run on a Supabase Edge Function to
-   validate a submitted solution — no logic duplication, no drift.
-2. **Simulation ≠ UI state.** The engine owns hot, per-frame mutable state.
-   The store (Zustand/Bloc) owns cold, render-relevant session state. React only
-   re-renders on cold changes; the canvas reads hot state directly each frame.
-3. **Deterministic clock.** Lights and the traffic controller resolve from a
-   monotonic `clockMs`. Given the same tap sequence + dt sequence, the outcome
-   is bit-for-bit reproducible — essential for replays and server validation.
-4. **Fairness is geometric.** A vehicle only yields to another whose trajectory
-   it would *physically* conflict with (`pathsConflict`). Every level is
-   therefore provably solvable by clearing non-conflicting arms in any order.
+1. **Pure core.** `src/core` has no DOM, no framework and no I/O. The same modules run in the browser, in Node tests, in a React Native / Flutter-JS port and in the Supabase edge function.
+2. **Deterministic simulation.** A fixed 60 Hz tick, integer tick clock and one shared kinematic profile. The same tap sequence always produces the same result, which is what makes server-side replay verification possible.
+3. **One trajectory for rendering and rules.** Each movement is an arc-length-parametrised path. The renderer draws cars on exactly the path the rule engine reasons about.
+4. **Fairness from geometry.** A vehicle only owes right of way to a vehicle whose trajectory it would physically intersect (precomputed conflict zones). No arbitrary "rules" without a reason on the road.
+5. **Hot vs cold state.** The engine owns per-tick state and is read directly by the renderer. The store owns session state (screens, save, economy) and changes a few times per minute.
 
 ---
 
-## 1. Module map
+## 2. Module map
 
 ```
-src/
-├─ core/                 # PURE, framework-agnostic. No DOM, no RN, no Flutter.
-│  ├─ types.ts           # Domain model: enums, interfaces, LevelDefinition
-│  ├─ geometry.ts        # Direction algebra + pathsConflict (conflict matrix)
-│  ├─ lights.ts          # phaseAt(): deterministic traffic-light phase
-│  ├─ controller.ts      # controllerPoseAt(): boss regulirovshik poses
-│  ├─ rules.ts           # ★ canVehicleMove(): the Rule Validation Engine
-│  ├─ level.ts           # hydrateLevel(): LevelDefinition → IntersectionState
-│  ├─ engine.ts          # GameEngine: tick, tap, events, queue mgmt, economy
-│  └─ index.ts           # public barrel
-├─ state/
-│  └─ store.ts           # Zustand-shaped store (session/meta state + economy)
-├─ levels/
-│  ├─ levels.ts          # tutorials + deterministic 1..50 generator (CAMPAIGN)
-│  └─ garage.ts          # cosmetic catalog (models & mods)
-├─ render/
-│  └─ iso.ts             # isometric projection + canvas renderer
-└─ demo/
-   └─ main.ts            # browser prototype wiring (canvas + HUD + input)
+src/core/            pure, framework-free (≈2.2k lines)
+  types.ts           domain + level JSON types
+  dir.ts             direction algebra, right-hand lane geometry
+  path.ts            PathBuilder → uniform arc-length Path (O(1) sample)
+  junction.ts        cross / cross_ctrl / roundabout paths + conflict zones (cached)
+  kinematics.ts      60 Hz clock, accel/cruise profile, distAt/timeAt
+  signals.ts         traffic-light plans (green, green-flash, amber, red+amber, flashing)
+  controller.ts      traffic-controller gestures and body sides
+  rules.ts           ★ canVehicleMove — priority ladder, yield graph, Tarjan SCC, space-time
+  level.ts           validateLevel (Uzbek messages) + loadLevel
+  engine.ts          GameEngine: tap(), step(), queues, arrivals, penalties, events
+  scoring.ts         stars, coin rewards (shared with the server)
+  replay.ts          makeReplay / verifyReplay (anti-cheat)
+  bot.ts             greedy legal autoplay: solvability proof, par time, hints
+src/content/         campaign data, generator, garage catalog, Uzbek rule texts
+src/web/             browser client (canvas renderer + DOM UI, no framework)
+  render/            camera, static scene cache, vehicles + sprite LRU, props, compositor
+  screens/           menu, levels, play, garage, settings, rules, editor
+  net/               Supabase REST client + offline-first sync
+supabase/            SQL migration (RLS, RPC) + submit-run edge function
+scripts/             campaign freezer, edge bundler, static server, e2e/perf browser checks
+tests/               63 node:test cases (geometry, every rule, engine, campaign, web, edge)
 ```
 
-The **dependency direction is strictly inward**: `render/` and `demo/` and
-`state/` depend on `core/`, never the reverse. Porting to React Native or
-Flutter means rewriting only `render/`, `state/` binding, and `demo/`.
+There are no runtime dependencies. The only dev dependency is TypeScript.
 
 ---
 
-## 2. State Management Architecture
+## 3. Grid, geometry and the vehicle state machine
 
-### 2.1 Two-layer model
+### 3.1 Coordinates and lanes
 
-| Layer | Owns | Mutates | React re-renders? |
-|------|------|---------|-------------------|
-| **GameEngine** (`core/engine.ts`) | vehicles, clock, crash timers, lives, coins | every frame (`update(dt)`) | **No** — read imperatively in the render loop |
-| **Store** (`state/store.ts`) | levelIndex, totalCoins, garage/owned skins, status flags, a *snapshot* of vehicles, `lastEvent` | on discrete events (tap result, level complete) | **Yes** — via selectors |
-
-Why split? Re-rendering a React tree at 60 fps for 20+ moving cars is wasteful
-and janky. Instead:
-
-- The **canvas / RN Skia surface** reads `engine.getVehicles()` directly inside
-  `requestAnimationFrame` and paints — no React involved in the hot path.
-- The **store** holds only what the *chrome* (HUD, modals, garage) needs and
-  updates a few times per second at most.
-
-### 2.2 Zustand shape (React Native)
+The world is top-down with `x` pointing east and `y` pointing south (y-down). One unit is one lane width. Directions are indexed clockwise, `N=0 E=1 S=2 W=3`, so the rules reduce to modular arithmetic:
 
 ```ts
-import { create } from 'zustand';
-
-export const useGameStore = create<GameStore>()((set, get) => ({
-  levelIndex: 0, totalCoins: 0, lives: 3, coins: 0, status: 'idle',
-  vehicles: [], ownedSkins: ['default'], equippedSkin: 'default',
-  loadLevel(level) { /* build GameEngine, subscribe events → set(...) */ },
-  tap(id)          { get().engine?.tap(id); get().syncFromEngine(); },
-  syncFromEngine() { /* pull snapshot + lives + coins into store */ },
-  buy(item)        { /* economy */ },
-  equip(skinId)    { /* cosmetics */ },
-}));
+rightOf(d)   = (d + 3) % 4   // arriving from S (heading N), the right-hand arm is E
+opposite(d)  = (d + 2) % 4
+exitOf(d, t) = heading ± 90° // heading = opposite(d)
 ```
 
-This repo ships a ~30-line `create()` in `state/store.ts` that mirrors Zustand's
-`(set, get) => state` + `subscribe/getState/setState` contract so the store runs
-dependency-free in the browser. **Swapping in real Zustand is a one-line import
-change** — the store body is identical.
+Traffic drives on the right. The incoming lane of arm `d` is offset 0.5 lanes to the right of the inbound heading (`inLane`), and the outgoing lane mirrors it (`outLane`). For example, a car from the south drives up `x = +0.5`.
 
-### 2.3 Flutter / Bloc equivalent
+### 3.2 Paths
 
-- `GameEngine` → a plain Dart class (unchanged conceptually).
-- Store → a `Cubit<GameState>` where `GameState` is the cold snapshot.
-- Hot rendering → a `CustomPainter` reading the engine each `Ticker` frame,
-  driven by `SingleTickerProviderStateMixin`, *outside* the Bloc rebuild path.
+For every movement (4 arms × straight/left/right) `junction.ts` builds the path the **front bumper** follows: stop line → junction → exit lane → despawn point. The path is sampled densely, then resampled at a uniform 0.05-unit step, so `sample(s)` is O(1).
 
-### 2.4 Event flow
+| Geometry | Straight | Right | Left |
+|---|---|---|---|
+| `cross` | line | r = 0.5 arc around the near corner | r = 1.5 arc around the far-left corner |
+| `cross_ctrl` (boss) | line | same | r = 0.5 arc around the centre, so cars drive around the controller |
+| `roundabout` | entry Bézier → ring arc (counter-clockwise on the map) → exit Bézier | | |
+
+### 3.3 Conflict zones
+
+For every ordered pair of movements from different arms, the two sampled paths are compared (O(n·m), about 5–15 ms per geometry, computed once and cached). Sample pairs closer than `CLEAR_DIST = 0.72` form the zone:
+
+- **cross**: the headings differ, so the zone is the whole overlapping stretch, `[a0,a1]` on A and `[b0,b1]` on B.
+- **merge**: the headings become co-directional (same exit lane, or the roundabout ring), so the zone is cut at merge point + `MERGE_LEN`. After that point the cars just follow each other.
+
+Test `geometry.test.mjs` checks the cross-junction matrix against an independent chord-interleaving model of the 8 boundary ports. It gives the standard **16 crossing + 12 merge** conflicts, plus the 2 opposing-left crossings that natural turning arcs produce: 18 crossings in total. Opposing straights and paired right turns never conflict.
+
+### 3.4 Vehicle lifecycle
 
 ```
- user tap ──► store.tap(id) ──► engine.tap(id)
-                                   │
-        ┌──────────────────────────┼───────────────────────────┐
-        ▼                          ▼                            ▼
-  canVehicleMove()          MOVE_STARTED / COLLISION      store folds event
-  (pure decision)           / ILLEGAL_TAP emitted         → set() cold state
-                                   │
- rAF loop ──► engine.update(dt) ──► MOVE_COMPLETED / LEVEL_COMPLETE / GAME_OVER
+hidden ─spawn→ queued ─front→ approaching ─stops at line→ waiting ─legal tap→ crossing ─exit+1.2→ exiting ─end→ gone
+                                                              └─illegal tap→ penalty (lock 0.67 s, flash) ─┘
 ```
 
-Events (`GameEvent` union) are the single integration surface between engine and
-UI/audio. Add sound, haptics, analytics, or the YPX whistle by subscribing —
-never by reaching into engine internals.
+Only `waiting` vehicles can be tapped. Once a vehicle is `crossing` it never stops. That is why every collision decision is made at tap time.
 
 ---
 
-## 3. The Rule Validation Engine (`canVehicleMove`)
-
-### 3.1 Signature
+## 4. Validation algorithm — `canVehicleMove(vehicleId, state)`
 
 ```ts
 function canVehicleMove(vehicleId: string, state: IntersectionState): MoveDecision
+// MoveDecision = { allowed, verdict: 'go'|'wait'|'violation', reason, culprits[], deadlock }
 ```
 
+`IntersectionState` is an interface; `GameEngine` implements it, so the engine is passed in directly. The function is pure.
+
+### 4.1 Priority ladder (first failing rung wins)
+
+| # | Rung | Outcome | Reason |
+|---|---|---|---|
+| 0 | Readiness: only the front vehicle at the stop line | soft `wait`, no penalty | `not_front`, `not_ready`, `locked` |
+| 1 | Regulation: the controller's gesture, then the traffic light. Emergency vehicles are exempt. | violation | `controller`, `red_light` |
+| 2 | **Space-time**: would we occupy a conflict zone while a crossing vehicle does? | violation | `crossing_traffic`, `roundabout_ring` |
+| 3 | **Right-of-way graph** over the vehicles present at the stop lines | violation | `emergency`, `main_road`, `right_hand`, `left_turn` |
+
+### 4.2 Right-of-way as a graph
+
+Nodes are the front vehicles present at their stop lines that the regulation currently lets move. An edge `a → b` means *a must yield to b*. Edges only exist between vehicles whose paths conflict:
+
 ```ts
-interface MoveDecision {
-  allowed: boolean;
-  reason?: DenyReason;         // machine-readable (drives UI/tutorial)
-  conflictsWith: string[];     // ids to crash-animate / highlight
-  explanation: string;         // uz-language player-facing text
+if (b.emergency && !a.emergency) return 'emergency';
+switch (mode) {
+  case 'controller': case 'signal': return leftTurnRule(a, b);   // left turn yields to oncoming straight/right
+  case 'roundabout':                return null;                  // the ring is handled by space-time
+  case 'priority':                  if (prio[a] !== prio[b]) return prio[a] < prio[b] ? 'main_road' : null;
+                                    // equal priority → fall through
+  case 'equal':                     return b.from === rightOf(a.from) ? 'right_hand' : leftTurnRule(a, b);
 }
 ```
 
-### 3.2 The priority ladder (short-circuit, first deny wins)
+The tapped vehicle `v` may go if it has **no outgoing edge**. If it does have one, Tarjan's SCC algorithm runs on the (≤ 4-node) graph. If `v` belongs to a **terminal strongly-connected component with more than one node**, the vehicles are in a genuine deadlock, such as four cars going straight at an equal junction. In that case any member may proceed, as drivers "agree", and the move is flagged `deadlock: true`. Otherwise the move is a violation, and the culprits are `v`'s yield targets.
 
-| # | Rung | Denies when… | `DenyReason` |
-|---|------|--------------|--------------|
-| 0 | Movability | vehicle isn't front-of-queue & `WAITING` | `NOT_AT_FRONT` / `NOT_MOVABLE` |
-| 1 | Traffic light | approach light is RED/YELLOW (and no controller) | `RED_LIGHT` |
-| 2 | Controller (boss) | current pose doesn't allow this arm | `CONTROLLER_FORBIDS` |
-| 3 | Emergency | a **conflicting** contender is an ambulance/fire truck | `MUST_YIELD_EMERGENCY` |
-| 4 | Roundabout | traffic already circulating conflicts | `MUST_YIELD_ROUNDABOUT` |
-| 5 | Main road | you're on SECONDARY, a conflicting car is on MAIN | `MUST_YIELD_MAIN_ROAD` |
-| 6 | Right-hand rule | a conflicting contender approaches from your right | `MUST_YIELD_RIGHT` |
+### 4.3 Space-time check
 
-Only rungs 3–6 consider **path conflicts**; a vehicle whose path doesn't cross
-anyone's is always clear (fairness). The ladder mirrors Uzbek PDD precedence:
-lights/controller are absolute, emergencies override signs, roundabout entry
-yields to the circle, signs beat the default right-hand rule.
-
-### 3.3 Conflict detection — graph/geometry (`geometry.ts`)
-
-Directions are indexed **clockwise** `N=0, E=1, S=2, W=3`, so "the approach on
-my right" is pure modular arithmetic:
+Every vehicle entering the junction starts from rest with the same profile, `s(t) = ½·a·t²` up to `VMAX`, then linear. `timeAt(s)` is its exact inverse. For a zone `[z0, z1]` and vehicle length `L`, the occupancy window is `[T(z0), T(z1 + L)]`. A crossing vehicle's window is shifted by its start tick:
 
 ```ts
-// driver faces opposite(from); their right is 90° CW of facing → from-1 (mod 4)
-export const approachOnRight = (from) => rotateCW(from, 3);
-export const exitDirection   = (from, intent) => { /* facing ± quarter turns */ };
+const rel = (x.startTick - state.tick) / 60;
+overlap = timeAt(z.a0) < rel + timeAt(z.b1 + x.length) + MARGIN
+       && rel + timeAt(z.b0) < timeAt(z.a1 + v.length) + MARGIN;
 ```
 
-`pathsConflict(aFrom,aIntent,bFrom,bIntent)` treats each move as a **chord**
-across the intersection square and returns `true` iff the chords cross the
-shared centre box:
+This single rule covers "yield to vehicles completing the crossing", opposing left turns, green-phase changeovers and the roundabout rule "circulating traffic has priority", including gap acceptance. Because every profile is identical, a follower can never catch its leader after a merge, so short merge zones are enough.
 
-- same origin → never (single-file queue),
-- two right turns → never (hug outer kerb),
-- shared exit lane → conflict (merge point),
-- otherwise → conflict iff one chord's *swept arc of arms* covers the other's
-  origin or destination arm.
+### 4.4 Coverage
 
-This is an exact, allocation-free proxy for continuous collision simulation and
-is what keeps the puzzle fair and the check O(arms).
-
-### 3.4 Why pure?
-
-`canVehicleMove` has **no I/O, no randomness, no mutation**. Consequences:
-
-- Trivially unit-testable (see `tests/engine.test.mjs`, 13 assertions).
-- Runs unchanged in a Supabase Edge Function (Deno/TS) to re-validate a
-  client-submitted solution → **anti-cheat** without a second implementation.
-- Safe to call speculatively for **hints/tooltips** (`engine.preview(id)`).
+`tests/rules.test.mjs` has 22 scenarios, one per rule: right-hand rule, left turn against oncoming traffic, fairness, main road vs. yield/stop, equal rules among main-road vehicles, emergency priority over signs and red lights, red/amber/green, left turn on green, flashing amber falling back to signs, the controller gesture table and override, the four-way deadlock, the queue no-op, space-time timing, roundabout priority, T-junctions, the post-penalty lock and approaching vehicles.
 
 ---
 
-## 4. Queue Management
+## 5. Queue management
 
-Each approach is a single-file lane. Invariants enforced by the engine:
+Each arm keeps an ordered list of lane vehicles. Every tick, each vehicle drives toward its **slot**: the front slot is the stop line, and each later slot is one vehicle length plus 0.4 further back. Speed follows a braking curve `v ≤ √(2·decel·dist)`, capped by acceleration. A car-following clamp keeps each vehicle at least `Q_MIN_GAP` behind the one ahead, including the vehicle that just departed while it is still on the incoming lane. A front vehicle becomes `waiting` only once it has stopped exactly on the line. Tapping any other vehicle returns `not_front` and does nothing, as the brief requires. Timed `arrivals` spawn at the far end of the arm and join the back of the queue at cruising speed.
 
-- Only the car at `queueIndex === 0` is `WAITING`; the rest are `QUEUED`.
-- Tapping a `QUEUED` car returns `NOT_AT_FRONT` → no-op, no penalty.
-- When the front car reaches `CLEARED`, `promoteQueue(from)` compacts the lane:
-  everyone's `queueIndex` shifts down by one and the new front becomes
-  `WAITING`. O(cars-on-arm) per clear.
+---
 
-```ts
-// engine.ts (excerpt)
-private promoteQueue(from: Direction) {
-  const queue = this.getVehicles()
-    .filter(v => v.from === from && (v.state === QUEUED || v.state === WAITING))
-    .sort((a, b) => a.queueIndex - b.queueIndex);
-  queue.forEach((v, idx) => {
-    v.queueIndex = idx;
-    v.state = idx === 0 ? WAITING : QUEUED;
-  });
+## 6. State management
+
+### 6.1 Two layers
+
+| Layer | Holds | Changes | Read by |
+|---|---|---|---|
+| `GameEngine` (hot) | vehicles, lanes, tick, lives, coins earned this level | 60× per second | renderer (directly, every frame), HUD (text diffed) |
+| App store (cold) | screen, save data, economy, garage, settings, cloud status | on events | DOM screens via `subscribe` / `subscribeSelector` |
+
+The store is Zustand-shaped (`createStore((set, get, api) => ({ ...state, ...actions }))`, see `src/web/store.ts`). In React Native you swap it for `import { create } from 'zustand'` and the store body stays the same. Keeping 20+ moving vehicles out of the store means no framework has to diff them at 60 fps.
+
+### 6.2 Event flow
+
+```
+pointer → Renderer.pick() → engine.tap(id) → canVehicleMove()
+                                   ├─ go        → 'depart'  → sound, lane shift
+                                   ├─ violation → 'penalty' → whistle, red flash, heart −1, culprit rings
+                                   └─ wait      → 'blocked' → horn + hint toast (no penalty)
+rAF → accumulator → engine.step() ×N → 'cleared' (+coins popup), 'arrive', 'won' / 'lost'
+'won' → store.finishLevel() → computeReward() → save (debounced) → pending replay → cloudSync()
+```
+
+`GameEvent`s are the only coupling between the simulation and presentation. Audio, haptics, analytics and tutorials all subscribe to them.
+
+### 6.3 Flutter / Bloc mapping
+
+The `GameEngine` becomes a plain Dart class, or stays in JS via a JS runtime. The cold state becomes a `Cubit<AppState>`. Rendering is a `CustomPainter` driven by a `Ticker` that calls `engine.step()` outside the Bloc rebuild path. See `docs/REACT_NATIVE.md` for the React Native version.
+
+---
+
+## 7. Level data structure
+
+Levels are plain JSON (`LevelDef` in `src/core/types.ts`). There is a JSON Schema at `levels/level.schema.json`, and the campaign is exported to `levels/campaign.json`.
+
+```jsonc
+{
+  "id": 12, "name": "Asosiy yo'lda chapga", "band": "complex", "junction": "cross",
+  "arms": [
+    { "dir": "N", "sign": "main",  "queue": [{ "kind": "car", "turn": "straight" }] },
+    { "dir": "E", "sign": "stop",  "queue": [{ "kind": "car", "turn": "straight" }] },
+    { "dir": "S", "sign": "main",  "queue": [{ "kind": "car", "turn": "left" }, { "kind": "car", "turn": "straight" }] },
+    { "dir": "W", "sign": "stop",  "queue": [{ "kind": "car", "turn": "right" }],
+      "arrivals": [{ "kind": "ambulance", "turn": "straight", "atMs": 9000 }] }
+  ],
+  "signals":    { "phases": [{ "green": ["N","S"], "ms": 7000 }, { "green": ["E","W"], "ms": 7000 }], "flashing": [{ "fromMs": 0, "toMs": 14000 }] },
+  "controller": { "poses": [{ "gesture": "right_forward", "facing": "S", "ms": 5000 }, { "gesture": "arm_up", "facing": "S", "ms": 1200 }] },
+  "lives": 3, "parMs": 8500,
+  "intro": { "title": "…", "text": "…" }, "tip": "…"
 }
 ```
 
----
+(`signals` and `controller` are shown together only to illustrate the shape. The validator rejects a level that has both.)
 
-## 5. Level Data Structure
+`validateLevel()` enforces the arm count per junction type, that every turn has an existing exit, that the queue fits on the arm, and that each arm is green in exactly one signal phase. For controller levels it checks that every non-emergency movement is permitted by at least one pose. It reports every problem in Uzbek.
 
-Levels are **plain data** (`LevelDefinition`) — hand-author, generate, or export
-from a designer tool. Full interface in `core/types.ts`; shape summary:
-
-```ts
-interface LevelDefinition {
-  id: number;
-  name: string;
-  type: IntersectionType;              // CROSS | T_JUNCTION | ROUNDABOUT
-  lives: number;
-  starThresholdsMs?: [number, number, number];
-  approaches: ApproachDesign[];        // per-arm sign, lights, spawn queue
-  controller?: ControllerScript;       // boss levels only (regulirovshik)
-  tags?: string[];                     // 'tutorial' | 'boss' | 'signs' | ...
-}
-
-interface ApproachDesign {
-  direction: Direction;
-  sign: SignType;                      // NONE | MAIN_ROAD | YIELD | STOP | ROUNDABOUT
-  enabled?: boolean;
-  queue: SpawnSpec[];                  // front-to-back
-  trafficLight?: TrafficLight;         // deterministic cycle + offset
-}
-
-interface SpawnSpec { kind: VehicleKind; intent: TurnIntent; skinId?: string; }
-```
-
-### 5.1 Progression (`levels/levels.ts`)
-
-A **seeded, deterministic** generator (mulberry32 PRNG) builds the 50-level
-campaign per the design brief, so `generateLevel(id)` is stable across runs and
-platforms:
-
-| Band | Levels | Content |
-|------|--------|---------|
-| Baza | 1–10 | CROSS, equal roads, ≤1 car/arm — teach the right-hand rule |
-| Murakkab | 11–30 | main/secondary signs **or** traffic lights, 2–3 car queues |
-| Aylanma | 31–50 | ROUNDABOUT topology, heavier traffic |
-| **Boss** | 10, 20, 30, 40, 50 | **regulirovshik** `ControllerScript` overrides signs/lights; max tirbandlik |
-
-Levels 1–3 are hand-tuned tutorials with exact uz wording. Determinism means a
-leaderboard for "level 27" always refers to the same layout.
+**Campaign pipeline.** 18 levels are hand-made teaching levels: 1–6, 8, 10–12, 16, 20–24, 31 and 36, each introducing one rule. The other 32 come from a seeded generator (`content/generator.ts`) driven by a curriculum spec; bosses 30, 40 and 50 use fixed controller scripts with generated traffic. For each spec the generator tries up to 24 deterministic seeds. It keeps the most "interesting" candidate: most blocked front vehicles at the start, and deadlocks count extra. A candidate only qualifies if it validates **and** the autoplay bot solves it with zero penalties. `npm run campaign` freezes the result into `campaign.data.ts`. Every level's par time is `bot time × 1.25 + 2.5 s`, where the bot reacts in 0.3 s. Result: 50 levels (33 cross, 4 T, 13 roundabout), 545 vehicles (115 timed arrivals, 20 emergency), 5 boss levels, par times from 5.5 s to 83.5 s.
 
 ---
 
-## 6. Performance — 20+ cars at 60 fps
+## 8. Rendering performance (20+ cars)
 
-The requirement is smooth isometric rendering under heavy traffic. Techniques
-used (and recommended for the RN/Flutter port):
+| Technique | Where |
+|---|---|
+| Static scene (ground, roads, markings, island, background buildings) rendered once to an offscreen canvas per level/resize, then one `drawImage` per frame | `render/scene.ts` |
+| Vehicles are oriented 3D boxes with back-face culling (`n.x + n.y > 0`). Each (look, heading bucket of 64) is pre-rendered into a **sprite**, kept in an **LRU cache** (360 entries) and invalidated on zoom/DPR change | `render/vehicles.ts` |
+| Painter's algorithm: vehicles and tall props (poles, trees, controller) sorted by `x + y` each frame, reusing a pooled array | `render/renderer.ts` |
+| Fixed 60 Hz simulation with an accumulator, rendering interpolated between ticks (crossing positions analytically from `distAt`) | `screens/play.ts` |
+| DPR-aware canvas (capped at 2×), paused when the tab is hidden, no per-vehicle DOM nodes | |
+| Conflict zones precomputed per geometry; the yield graph has ≤ 4 nodes, so a tap costs microseconds | `core/junction.ts`, `core/rules.ts` |
 
-1. **Static scene caching.** Roads, kerbs, signs, and roundabout island are
-   rendered **once** to an offscreen canvas (`renderScene`) and `drawImage`-blitted
-   each frame. Only vehicles are re-drawn. → the expensive tile fills happen on
-   level load / resize, not per frame.
-2. **Single surface, single loop.** One `<canvas>` + one `requestAnimationFrame`
-   loop. **No per-vehicle DOM nodes** (the classic mobile-web killer). In RN use
-   one `react-native-skia` `Canvas`; in Flutter one `CustomPainter`.
-3. **Painter's algorithm for depth.** Vehicles are sorted by projected screen-Y
-   (`sortForPaint`) and drawn back-to-front, giving correct isometric overlap
-   without a z-buffer. Sort is O(n log n) on ≤~30 items — negligible.
-4. **No hot-path allocations.** Projection returns small literals; the loop
-   avoids array/object churn. GC pressure is what causes frame drops on mobile.
-5. **Fixed-ish timestep.** `update(dt)` clamps `dt ≤ 50ms` so a stall can't
-   teleport cars through the intersection; motion stays deterministic.
-6. **Decouple sim from React.** Because the canvas reads engine state directly,
-   React never diffs the moving entities — it only re-renders the HUD chrome a
-   few times/sec.
+**Measured** with headless Chromium (software rendering, 1280×760), 24 vehicles visible, 6 s per sample (`npm run perf`). Ranges come from two separate runs:
 
-**Scaling further (100+ entities):** add a coarse spatial hash for hit-testing,
-sprite-atlas the car art (one texture, `drawImage` sub-rects), and move the sim
-to a Web Worker / isolate, posting only a typed-array snapshot to the render
-thread.
+| Sprite cache | DPR | Render cost / frame | Frame time p50 / p99 | FPS |
+|---|---|---|---|---|
+| on | 1 | **0.27–0.39 ms** | 16.7 / 16.8 ms | 60 |
+| off (vector) | 1 | 0.66–0.89 ms | 16.7 / 16.8 ms | 60 |
+| on | 2 | **0.36–0.39 ms** | 16.7 / 16.8 ms | 60 |
+| off (vector) | 2 | 0.72–0.78 ms | 16.7 / 16.8 ms | 60 |
+
+Frame times are capped by vsync; the render cost is the meaningful number. The sprite cache makes it roughly **2× cheaper**, and either way under 6 % of the 16.7 ms frame budget is used. The in-game "Performance paneli" setting shows live FPS, render time and cache hit rate. These are sandbox measurements, not measurements on real phones.
 
 ---
 
-## 7. Supabase — progression sync & anti-cheat
+## 9. Determinism and anti-cheat
 
-### 7.1 Schema (Postgres)
-
-```sql
-create table profiles (
-  id uuid primary key references auth.users on delete cascade,
-  username text unique,
-  total_coins int not null default 0,
-  created_at timestamptz default now()
-);
-
-create table level_progress (
-  user_id uuid references profiles(id) on delete cascade,
-  level_id int not null,
-  best_time_ms int,
-  stars int check (stars between 0 and 3),
-  completed_at timestamptz default now(),
-  primary key (user_id, level_id)
-);
-
-create table garage_inventory (
-  user_id uuid references profiles(id) on delete cascade,
-  item_id text not null,
-  primary key (user_id, item_id)
-);
-```
-
-Enable **Row Level Security** so each row is readable/writable only by its owner:
-
-```sql
-alter table level_progress enable row level security;
-create policy "own rows" on level_progress
-  for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
-```
-
-### 7.2 Anti-cheat via the shared rule engine
-
-The client submits a **replay** (`levelId`, ordered `tap` sequence, `dt` stream)
-rather than a raw score. A Supabase **Edge Function** (Deno/TypeScript) imports
-the *same* `core/` modules, re-runs the deterministic simulation, and only then
-writes `level_progress`:
-
-```ts
-// supabase/functions/submit-run/index.ts (sketch)
-import { GameEngine } from '../../core/engine.ts';
-import { generateLevel } from '../../levels/levels.ts';
-
-const { levelId, taps, dts } = await req.json();
-const engine = new GameEngine(generateLevel(levelId));
-let ti = 0;
-for (const dt of dts) {
-  while (taps[ti]?.atMs <= engine.state.clockMs) engine.tap(taps[ti++].vehicleId);
-  engine.update(dt);
-}
-const s = engine.status();
-if (!s.isComplete) return json({ ok: false }, 400);   // reject impossible runs
-// upsert best_time / stars with RLS-scoped auth.uid()
-```
-
-Because the engine is deterministic and pure, the server's verdict is
-authoritative and the client cannot fake a completion or time.
-
-### 7.3 Offline-first sync
-
-Persist progress locally (AsyncStorage / MMKV / Hive) and reconcile with an
-`upsert` on reconnect, keeping the better `best_time_ms` / higher `stars`. Coins
-are server-authoritative (awarded on validated completion) to protect the economy.
+- A **replay** is `{ v: 1, levelId, taps: [[tick, vehicleId], …], endTick }`. Only state-changing taps are recorded, i.e. go and violation. Because the simulation is deterministic, the replay *is* the game.
+- `verifyReplay` rejects bad versions, level mismatches, oversized or unsorted taps, unknown vehicle ids, taps after the end and incomplete runs, and it requires `endTick` to match exactly. Tests cover each of these tampering cases.
+- **Supabase flow.** The client calls `POST /functions/v1/submit-run` with `{ levelId, replay }`. The edge function identifies the user (`GET /auth/v1/user`), re-simulates the replay with the same compiled core and calls `apply_run(...)` (service role only). Under a per-user+level advisory lock, `apply_run` rejects duplicate replays (SHA-256), computes the reward (first-clear bonus is paid once, stars only for newly earned stars), upserts the best progress and credits the coins. Clients can only **read** their own rows (RLS); purchases go through `purchase_item` (an atomic coin check).
+- Cross-engine note: path sampling uses `Math.sin`/`Math.cos`, which V8 (Chrome, Node, Deno) computes identically. Zone bounds are rounded and windows compared with a 0.12 s margin, so tiny last-bit differences in other engines cannot flip an outcome in practice.
 
 ---
 
-## 8. Testing
+## 10. Verification status
 
-`tests/engine.test.mjs` runs the compiled engine under Node (no DOM) and asserts
-the behaviours the design depends on:
+| Area | How it was verified |
+|---|---|
+| Geometry, rules, engine, campaign, save/economy, Supabase client wire format, sync merge, edge function flow, SQL/TS catalog consistency | `npm test`: 63 tests, all passing |
+| All 50 levels solvable, with a verifying replay | bot + `verifyReplay` in `campaign.test.mjs` |
+| Real browser: menu → level 1 → wrong tap (penalty, heart lost) → correct taps via real hit-testing → win → save; queue no-op; garage buy/equip; editor; boss, lights, roundabout; mobile layout; 0 console errors | `scripts/e2e.mjs` (headless Chromium) |
+| Supabase against a **live** project | **Not run** (no network or Postgres in the build sandbox). The SQL was reviewed and its catalog/params are checked by tests, and the edge handler was tested with mocked GoTrue/PostgREST. See `docs/SUPABASE.md`. |
+| React Native port | Guide only (`docs/REACT_NATIVE.md`), not compiled here |
 
-- right-hand rule (exactly one of two conflicting equals yields),
-- main-road beats yield, emergency priority,
-- queue management (2nd car blocked → promoted → level completes),
-- fairness (non-conflicting moves both legal),
-- campaign size, boss placement, and generator determinism.
-
-```
-npm run build && node tests/engine.test.mjs   # → 13 passed, 0 failed
-```
-
-Port these to Vitest/Jest in the app repo; the assertions are engine-level and
-UI-independent, so they transfer verbatim.
-
----
-
-## 9. Porting checklist (RN / Flutter)
-
-- [ ] Keep `core/` **byte-identical** — it's already framework-free.
-- [ ] Replace `state/store.ts`'s mini-`create` with real Zustand (RN) or a Cubit (Flutter).
-- [ ] Rewrite `render/iso.ts` against `react-native-skia` / `CustomPainter`;
-      the projection math (`isoProject`, `laneAnchor`, `crossingPoint`) is reusable as-is.
-- [ ] Replace `demo/main.ts` input with `Pressable`/`GestureDetector` hit-tests.
-- [ ] Wire `GameEvent`s to audio (YPX whistle, engine SFX), haptics, analytics.
-- [ ] Deploy `core/` to a Supabase Edge Function for run validation.
+Known simplifications of the traffic model: one lane per direction, no pedestrians, trams or U-turns, a single roundabout lane, and a police car without a siren behaves as a normal car.

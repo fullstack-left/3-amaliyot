@@ -2,45 +2,18 @@
 <html lang="uz">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#0f172a" />
+    <meta name="description" content="Chorraha Boshqaruvi — yo'l harakati qoidalariga asoslangan izometrik boshqotirma o'yin." />
     <title>Chorraha Boshqaruvi — Traffic Puzzle</title>
-    <style>
-      * { box-sizing: border-box; }
-      html, body { margin: 0; height: 100%; background: #0f172a; color: #e5e7eb;
-        font-family: system-ui, "Segoe UI", Roboto, sans-serif; }
-      #app { display: flex; flex-direction: column; height: 100%; }
-      header {
-        display: flex; align-items: center; gap: 16px; padding: 10px 16px;
-        background: #111827; border-bottom: 1px solid #1f2937; flex-wrap: wrap;
-      }
-      header h1 { font-size: 16px; margin: 0; letter-spacing: .5px; }
-      .chip { background: #1f2937; padding: 4px 10px; border-radius: 999px; font-size: 14px; }
-      #msg { margin-left: auto; font-weight: 600; min-height: 20px; }
-      #game { flex: 1; width: 100%; display: block; cursor: pointer; }
-      footer { padding: 8px 16px; background: #111827; border-top: 1px solid #1f2937;
-        font-size: 12px; color: #9ca3af; display: flex; gap: 16px; flex-wrap: wrap; }
-      kbd { background: #374151; border-radius: 4px; padding: 1px 6px; font-size: 11px; }
-    </style>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='9' y='1' width='14' height='30' rx='4' fill='%231f2328'/%3E%3Ccircle cx='16' cy='8' r='4' fill='%23ff3b30'/%3E%3Ccircle cx='16' cy='16' r='4' fill='%23ffcc00'/%3E%3Ccircle cx='16' cy='24' r='4' fill='%2334c759'/%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
     <div id="app">
-      <header>
-        <h1>🚦 Chorraha Boshqaruvi</h1>
-        <span class="chip" id="level">Bosqich 1</span>
-        <span class="chip" id="lives">❤️❤️❤️</span>
-        <span class="chip" id="coins">🪙 0</span>
-        <span class="chip" id="pose"></span>
-        <span id="msg"></span>
-      </header>
-      <canvas id="game"></canvas>
-      <footer>
-        <span>🖱️ Mashinani bosing — u harakatlansin</span>
-        <span><kbd>R</kbd> qayta boshlash</span>
-        <span><kbd>N</kbd> keyingi bosqich</span>
-        <span><kbd>P</kbd> oldingi bosqich</span>
-        <span>Bosqich tugagach 2 marta bosing — davom eting</span>
-      </footer>
+      <noscript>O'yin uchun JavaScript kerak.</noscript>
+      <div class="boot">Yuklanmoqda…</div>
     </div>
-    <script type="module" src="./dist/demo/main.js"></script>
+    <script type="module" src="./dist/web/main.js"></script>
   </body>
 </html>

@@ -1,280 +1,324 @@
 /**
- * The Rule Validation Engine — the brain of "Chorraha Boshqaruvi".
- * ===============================================================
+ * Rule Validation Engine — `canVehicleMove(vehicleId, state)`.
+ * ============================================================
  *
- * `canVehicleMove(vehicleId, state)` returns a `MoveDecision` that answers:
- * "If the player taps this vehicle right now, is it legal, and if not, which
- * vehicles would it crash into and why?"
+ * Answers: "if the player taps this vehicle NOW, is it legal? If not, why, and
+ * which vehicles had priority / would be hit?"
  *
- * The evaluation is a strict PRIORITY LADDER, checked in order. The first rung
- * that denies movement wins. This ordering mirrors real Uzbek/PDD traffic law:
+ * Priority ladder (first failing rung wins):
  *
- *   0. Movability     — the vehicle must be at the front of its queue & waiting.
- *   1. Traffic light  — a red/yellow light is absolute (unless controller present).
- *   2. Controller     — a regulirovshik (boss level) overrides signs & lights.
- *   3. Emergency       — ambulances / fire trucks with a conflicting path win.
- *   4. Roundabout      — traffic already in the circle has priority.
- *   5. Main road       — MAIN beats SECONDARY on conflicting paths.
- *   6. Right-hand rule — equal roads: yield to conflicting traffic on your right.
+ *   0. Readiness     only the front vehicle stopped at the stop line (`waiting`).
+ *                    Anything else is a soft "wait" — no penalty (queue rule).
+ *   1. Regulation    traffic controller (boss) → traffic light. Emergency
+ *                    vehicles are exempt. Violation = penalty.
+ *   2. Space-time    would we occupy a conflict zone at the same time as a
+ *                    vehicle already crossing? → collision (penalty).
+ *   3. Right-of-way  a YIELD GRAPH over the vehicles present at the stop lines:
+ *                    edge a → b  ⇔  a must yield to b. Edge rules:
+ *                      - emergency vehicle beats everyone
+ *                      - roundabout: no mutual priority (ring handled in 2)
+ *                      - signals / controller: left turn yields to oncoming
+ *                        straight/right traffic
+ *                      - signs: secondary yields to main road
+ *                      - equal roads: right-hand rule + left turn yields to
+ *                        oncoming straight/right traffic
+ *                    A vehicle may go iff it has no outgoing edge, OR it sits
+ *                    in a TERMINAL strongly-connected component of size > 1
+ *                    (a genuine deadlock — drivers "agree", one proceeds).
+ *                    SCCs via Tarjan's algorithm.
  *
- * Crucially, a vehicle only has to yield to another vehicle whose path it would
- * actually CONFLICT with (see geometry.pathsConflict). This keeps puzzles fair
- * and solvable: clearing non-conflicting arms in any order is always legal.
+ * Only vehicles whose trajectories actually conflict (precomputed zones) can
+ * create an obligation, so puzzles stay fair and explainable.
  *
- * Every function here is PURE. No mutation, no I/O, no randomness. That is what
- * lets us run the identical check on a Supabase Edge Function for anti-cheat.
+ * Every function here is PURE: no mutation, no I/O, no randomness — the same
+ * code re-validates replays on the server.
  */
 
-import {
-  DenyReason,
-  Direction,
-  EMERGENCY_KINDS,
-  IntersectionState,
-  IntersectionType,
-  MoveDecision,
-  RoadPriority,
-  TrafficLightPhase,
-  Vehicle,
-  VehicleKind,
-  VehicleState,
-} from './types.js';
-import { approachOnRight, pathsConflict } from './geometry.js';
-import { phaseAt } from './lights.js';
-import { controllerPoseAt } from './controller.js';
+import { controllerPermits, type ControllerPlan } from './controller.js';
+import { opposite, rightOf } from './dir.js';
+import type { JunctionGeometry } from './junction.js';
+import { TICK_HZ, timeAt } from './kinematics.js';
+import { aspectAt, isGo, isRegulating, type SignalPlan } from './signals.js';
+import type { GeometryKey, JunctionType, RegulationMode, SignType, Vehicle } from './types.js';
 
-const ok = (): MoveDecision => ({
-  allowed: true,
-  conflictsWith: [],
-  explanation: "Yo'l ochiq — harakatlaning.",
-});
+export type Verdict = 'go' | 'wait' | 'violation';
 
-const deny = (
-  reason: DenyReason,
-  conflictsWith: string[],
-  explanation: string,
-): MoveDecision => ({ allowed: false, reason, conflictsWith, explanation });
+export type Reason =
+  | 'not_found'
+  | 'not_front'
+  | 'not_ready'
+  | 'locked'
+  | 'controller'
+  | 'red_light'
+  | 'crossing_traffic'
+  | 'roundabout_ring'
+  | 'emergency'
+  | 'main_road'
+  | 'right_hand'
+  | 'left_turn';
 
-function isEmergency(v: Vehicle): boolean {
-  return EMERGENCY_KINDS.includes(v.kind);
+export interface MoveDecision {
+  readonly allowed: boolean;
+  readonly verdict: Verdict;
+  readonly reason: Reason | null;
+  /** Vehicles that had priority / would have been hit. */
+  readonly culprits: readonly string[];
+  /** True when the move is allowed only by deadlock resolution. */
+  readonly deadlock: boolean;
 }
 
-/** Vehicles that are physically contesting the intersection right now. */
-function contenders(state: IntersectionState, exclude: Vehicle): Vehicle[] {
-  return Object.values(state.vehicles).filter(
-    (v) =>
-      v.id !== exclude.id &&
-      (v.state === VehicleState.WAITING || v.state === VehicleState.CROSSING),
-  );
+export interface Layout {
+  readonly type: JunctionType;
+  readonly geometry: GeometryKey;
+  readonly armEnabled: readonly boolean[];
+  readonly sign: readonly SignType[];
+  /** 2 = main road, 1 = unsigned, 0 = yield/stop. */
+  readonly priority: readonly number[];
+  readonly hasPrioritySigns: boolean;
+  readonly signals: SignalPlan | null;
+  readonly controller: ControllerPlan | null;
+  readonly stopU: number;
 }
 
-/** Only the front-of-queue waiter on each approach can contest. */
-function frontContenders(state: IntersectionState, exclude: Vehicle): Vehicle[] {
-  return contenders(state, exclude).filter(
-    (v) => v.state === VehicleState.CROSSING || v.queueIndex === 0,
-  );
+export interface IntersectionState {
+  readonly tick: number;
+  readonly layout: Layout;
+  readonly junction: JunctionGeometry;
+  readonly vehicles: readonly Vehicle[];
+  /** Per arm, the vehicles still in the lane, front first. */
+  readonly queues: readonly (readonly Vehicle[])[];
+  readonly byId: ReadonlyMap<string, Vehicle>;
+}
+
+/** An approaching front vehicle this close to the stop line already has its rights. */
+export const PRESENT_U = 1.2;
+/** Safety margin between occupancy windows (seconds). */
+export const TIME_MARGIN = 0.12;
+
+const REASON_RANK: Partial<Record<Reason, number>> = {
+  emergency: 4,
+  main_road: 3,
+  right_hand: 2,
+  left_turn: 1,
+};
+
+function decision(
+  verdict: Verdict,
+  reason: Reason | null,
+  culprits: readonly string[] = [],
+  deadlock = false,
+): MoveDecision {
+  return { allowed: verdict === 'go', verdict, reason, culprits, deadlock };
+}
+
+export function regulationMode(layout: Layout, tick: number): RegulationMode {
+  if (layout.controller) return 'controller';
+  if (layout.signals && isRegulating(layout.signals, tick)) return 'signal';
+  if (layout.type === 'roundabout') return 'roundabout';
+  if (layout.hasPrioritySigns) return 'priority';
+  return 'equal';
+}
+
+/** Is `o` currently allowed to move by the regulation (so others must respect it)? */
+export function isActive(o: Vehicle, mode: RegulationMode, layout: Layout, tick: number): boolean {
+  if (o.emergency) return true;
+  if (mode === 'controller') return controllerPermits(layout.controller!, tick, o.from, o.turn);
+  if (mode === 'signal') return isGo(aspectAt(layout.signals!, o.from, tick));
+  return true;
+}
+
+/** Front vehicles standing at (or just arriving at) their stop lines. */
+export function presentVehicles(state: IntersectionState): Vehicle[] {
+  const out: Vehicle[] = [];
+  const stopU = state.layout.stopU;
+  for (const q of state.queues) {
+    const f = q[0];
+    if (!f) continue;
+    if (f.state === 'waiting' || (f.state === 'approaching' && f.u - stopU <= PRESENT_U)) out.push(f);
+  }
+  return out;
+}
+
+function leftTurnRule(a: Vehicle, b: Vehicle): Reason | null {
+  return a.turn === 'left' && b.from === opposite(a.from) && b.turn !== 'left' ? 'left_turn' : null;
+}
+
+function equalRoadRule(a: Vehicle, b: Vehicle): Reason | null {
+  if (b.from === rightOf(a.from)) return 'right_hand';
+  return leftTurnRule(a, b);
+}
+
+/** Must `a` yield to `b`? Returns the rule that obliges it, or null. */
+export function mustYield(
+  a: Vehicle,
+  b: Vehicle,
+  mode: RegulationMode,
+  layout: Layout,
+  junction: JunctionGeometry,
+): Reason | null {
+  if (a.from === b.from) return null;
+  if (!junction.conflict(a.move, b.move)) return null;
+  if (b.emergency && !a.emergency) return 'emergency';
+  if (a.emergency && !b.emergency) return null;
+  const both = a.emergency && b.emergency;
+  switch (mode) {
+    case 'controller':
+    case 'signal':
+      return both ? equalRoadRule(a, b) : leftTurnRule(a, b);
+    case 'roundabout':
+      return both ? equalRoadRule(a, b) : null;
+    case 'priority': {
+      if (!both) {
+        const pa = layout.priority[a.from];
+        const pb = layout.priority[b.from];
+        if (pa < pb) return 'main_road';
+        if (pa > pb) return null;
+      }
+      return equalRoadRule(a, b);
+    }
+    case 'equal':
+      return equalRoadRule(a, b);
+  }
 }
 
 /**
- * MAIN entry point.
+ * Space-time check: vehicles already in the junction whose conflict-zone
+ * occupancy window would overlap ours if we started NOW.
  */
-export function canVehicleMove(
-  vehicleId: string,
-  state: IntersectionState,
-): MoveDecision {
-  const v = state.vehicles[vehicleId];
-  if (!v) {
-    return deny(DenyReason.NOT_MOVABLE, [], 'Avtomobil topilmadi.');
+export function spaceTimeConflicts(v: Vehicle, state: IntersectionState): string[] {
+  const out: string[] = [];
+  for (const x of state.vehicles) {
+    if (x === v || (x.state !== 'crossing' && x.state !== 'exiting')) continue;
+    if (x.from === v.from) continue; // same lane: identical profiles, follower can never catch up
+    const z = state.junction.conflict(v.move, x.move);
+    if (!z) continue;
+    const rel = (x.startTick - state.tick) / TICK_HZ;
+    const aStart = timeAt(z.a0);
+    const aEnd = timeAt(z.a1 + v.length);
+    const bStart = rel + timeAt(z.b0);
+    const bEnd = rel + timeAt(z.b1 + x.length);
+    if (aStart < bEnd + TIME_MARGIN && bStart < aEnd + TIME_MARGIN) out.push(x.id);
   }
-
-  // --- Rung 0: movability ------------------------------------------------
-  if (v.state !== VehicleState.WAITING) {
-    return deny(
-      DenyReason.NOT_MOVABLE,
-      [],
-      v.state === VehicleState.QUEUED
-        ? "Bu mashina navbatda — avval oldingi mashina o'tishi kerak."
-        : "Bu mashinani hozir harakatlantirib bo'lmaydi.",
-    );
-  }
-  if (v.queueIndex !== 0) {
-    return deny(
-      DenyReason.NOT_AT_FRONT,
-      [],
-      "Navbat: avval oldindagi mashina chorrahani bo'shatsin.",
-    );
-  }
-
-  const approach = state.approaches[v.from];
-
-  // --- Rung 1: traffic light --------------------------------------------
-  // A controller (rung 2) overrides lights, so only enforce lights when no
-  // active controller pose governs this tick.
-  const activePose = controllerPoseAt(state);
-  if (!activePose && approach?.trafficLight) {
-    const phase = phaseAt(approach.trafficLight, state.clockMs);
-    if (phase !== TrafficLightPhase.GREEN) {
-      return deny(
-        DenyReason.RED_LIGHT,
-        [],
-        phase === TrafficLightPhase.RED
-          ? 'Qizil chiroq — to‘xtang.'
-          : 'Sariq chiroq — kuting.',
-      );
-    }
-  }
-
-  // --- Rung 2: controller (regulirovshik / boss) ------------------------
-  if (activePose) {
-    if (!activePose.allow.includes(v.from)) {
-      return deny(
-        DenyReason.CONTROLLER_FORBIDS,
-        [],
-        `Yo‘l harakati boshqaruvchisi bu yo‘nalishga ruxsat bermayapti (${activePose.name}).`,
-      );
-    }
-    // Controller allows this arm; skip sign-based rungs but STILL respect
-    // emergency vehicles and physical path conflicts among allowed arms.
-    return resolveConflicts(state, v, /*ignoreSigns*/ true);
-  }
-
-  // --- Rungs 3-6: emergency, roundabout, main road, right-hand ----------
-  return resolveConflicts(state, v, /*ignoreSigns*/ false);
+  return out;
 }
 
-/**
- * Given that gross gating (lights / controller gating) passed, decide whether
- * `v` must yield to any conflicting contender based on the priority ladder.
- */
-function resolveConflicts(
-  state: IntersectionState,
-  v: Vehicle,
-  ignoreSigns: boolean,
-): MoveDecision {
-  const others = frontContenders(state, v);
-
-  // Keep only those whose path physically conflicts with ours.
-  const conflicting = others.filter((o) =>
-    pathsConflict(v.from, v.intent, o.from, o.intent),
-  );
-  if (conflicting.length === 0) return ok();
-
-  const vEmergency = isEmergency(v);
-
-  // Rung 3: EMERGENCY. If any conflicting contender is an emergency vehicle
-  // and we are not, we must yield. If WE are the emergency vehicle, we win.
-  if (!vEmergency) {
-    const emergencies = conflicting.filter(isEmergency);
-    if (emergencies.length > 0) {
-      return deny(
-        DenyReason.MUST_YIELD_EMERGENCY,
-        emergencies.map((e) => e.id),
-        'Maxsus transport (tez yordam / o‘t o‘chirish) o‘tsin — ustunlik bering.',
-      );
-    }
-    // else: fall through — emergency contenders handled, remaining are normal.
-  } else {
-    // We are emergency: we only yield to *another* emergency vehicle that is
-    // to our right (two ambulances still resolve by right-hand rule).
-    const otherEmergencies = conflicting.filter(isEmergency);
-    if (otherEmergencies.length === 0) return ok();
-    return rightHandAmong(state, v, otherEmergencies);
-  }
-
-  // At this point neither `v` nor the remaining decisive contenders below are
-  // emergencies (emergencies among `conflicting` already forced a yield above).
-  const normalConflicting = conflicting.filter((o) => !isEmergency(o));
-  if (normalConflicting.length === 0) return ok();
-
-  // Rung 4: ROUNDABOUT. Traffic already circulating (CROSSING inside the
-  // circle) has priority over anyone entering.
-  if (state.type === IntersectionType.ROUNDABOUT) {
-    const circulating = normalConflicting.filter(
-      (o) => o.state === VehicleState.CROSSING,
-    );
-    if (v.state === VehicleState.WAITING && circulating.length > 0) {
-      return deny(
-        DenyReason.MUST_YIELD_ROUNDABOUT,
-        circulating.map((o) => o.id),
-        'Aylanma harakatda — halqadagi transport ustun, yo‘l bering.',
-      );
-    }
-    // Among vehicles entering simultaneously, right-hand rule applies.
-    return rightHandAmong(state, v, normalConflicting);
-  }
-
-  // Rung 5: MAIN ROAD vs SECONDARY (only meaningful when signs are active).
-  if (!ignoreSigns) {
-    const myPriority = state.approaches[v.from]?.priority ?? RoadPriority.EQUAL;
-    if (myPriority === RoadPriority.SECONDARY) {
-      const superiors = normalConflicting.filter(
-        (o) =>
-          (state.approaches[o.from]?.priority ?? RoadPriority.EQUAL) ===
-          RoadPriority.MAIN,
-      );
-      if (superiors.length > 0) {
-        return deny(
-          DenyReason.MUST_YIELD_MAIN_ROAD,
-          superiors.map((o) => o.id),
-          'Asosiy yo‘ldagi transportga yo‘l bering (yo‘l bering belgisi).',
-        );
+/** Tarjan's strongly-connected components. Returns component id per node. */
+export function tarjanScc(n: number, adj: readonly (readonly number[])[]): number[] {
+  const index = new Array<number>(n).fill(-1);
+  const low = new Array<number>(n).fill(0);
+  const onStack = new Array<boolean>(n).fill(false);
+  const comp = new Array<number>(n).fill(-1);
+  const stack: number[] = [];
+  let counter = 0;
+  let compCount = 0;
+  const visit = (u: number): void => {
+    index[u] = low[u] = counter++;
+    stack.push(u);
+    onStack[u] = true;
+    for (const w of adj[u]) {
+      if (index[w] < 0) {
+        visit(w);
+        low[u] = Math.min(low[u], low[w]);
+      } else if (onStack[w]) {
+        low[u] = Math.min(low[u], index[w]);
       }
     }
-    if (myPriority === RoadPriority.MAIN) {
-      // We're on the main road; ignore SECONDARY contenders, but still resolve
-      // right-hand among other MAIN-road contenders.
-      const peers = normalConflicting.filter(
-        (o) =>
-          (state.approaches[o.from]?.priority ?? RoadPriority.EQUAL) ===
-          RoadPriority.MAIN,
-      );
-      if (peers.length === 0) return ok();
-      return rightHandAmong(state, v, peers);
+    if (low[u] === index[u]) {
+      for (;;) {
+        const w = stack.pop()!;
+        onStack[w] = false;
+        comp[w] = compCount;
+        if (w === u) break;
+      }
+      compCount++;
     }
-    // EQUAL priority → right-hand rule against all equal contenders.
-    const equals = normalConflicting.filter(
-      (o) =>
-        (state.approaches[o.from]?.priority ?? RoadPriority.EQUAL) ===
-        RoadPriority.EQUAL,
-    );
-    // If a conflicting car is on a MAIN road while we're EQUAL, that shouldn't
-    // happen in a well-formed level, but defensively treat MAIN as superior.
-    const mains = normalConflicting.filter(
-      (o) =>
-        (state.approaches[o.from]?.priority ?? RoadPriority.EQUAL) ===
-        RoadPriority.MAIN,
-    );
-    if (mains.length > 0) {
-      return deny(
-        DenyReason.MUST_YIELD_MAIN_ROAD,
-        mains.map((o) => o.id),
-        'Asosiy yo‘ldagi transportga yo‘l bering.',
-      );
-    }
-    return rightHandAmong(state, v, equals);
-  }
+  };
+  for (let u = 0; u < n; u++) if (index[u] < 0) visit(u);
+  return comp;
+}
 
-  // Signs ignored (controller-allowed arms): resolve by right-hand rule.
-  return rightHandAmong(state, v, normalConflicting);
+export interface YieldGraph {
+  readonly nodes: readonly Vehicle[];
+  readonly adj: readonly (readonly number[])[];
+  readonly reasons: ReadonlyMap<number, Reason>;
+}
+
+/** Build the right-of-way graph among the active vehicles present at stop lines. */
+export function buildYieldGraph(state: IntersectionState, mode: RegulationMode, extra?: Vehicle): YieldGraph {
+  const nodes = presentVehicles(state).filter((o) => isActive(o, mode, state.layout, state.tick));
+  if (extra && !nodes.includes(extra)) nodes.push(extra);
+  const n = nodes.length;
+  const adj: number[][] = nodes.map(() => []);
+  const reasons = new Map<number, Reason>();
+  for (let a = 0; a < n; a++) {
+    for (let b = 0; b < n; b++) {
+      if (a === b) continue;
+      const r = mustYield(nodes[a], nodes[b], mode, state.layout, state.junction);
+      if (r) {
+        adj[a].push(b);
+        reasons.set(a * n + b, r);
+      }
+    }
+  }
+  return { nodes, adj, reasons };
 }
 
 /**
- * Rung 6: the right-hand rule.
- * `v` must yield to any conflicting contender that is approaching from the arm
- * immediately to v's right. If such a contender is WAITING (present), deny.
+ * THE validation function.
  */
-function rightHandAmong(
-  state: IntersectionState,
-  v: Vehicle,
-  conflicting: Vehicle[],
-): MoveDecision {
-  const rightArm: Direction = approachOnRight(v.from);
-  const onMyRight = conflicting.filter((o) => o.from === rightArm);
-  if (onMyRight.length > 0) {
-    return deny(
-      DenyReason.MUST_YIELD_RIGHT,
-      onMyRight.map((o) => o.id),
-      'O‘ng qo‘l qoidasi: o‘ngingizdagi transportga yo‘l bering.',
-    );
+export function canVehicleMove(vehicleId: string, state: IntersectionState): MoveDecision {
+  const v = state.byId.get(vehicleId);
+  if (!v) return decision('wait', 'not_found');
+
+  // --- 0. readiness (soft) ------------------------------------------------
+  if (v.state === 'queued') return decision('wait', 'not_front');
+  if (v.state !== 'waiting') return decision('wait', 'not_ready');
+  if (state.tick < v.lockUntil) return decision('wait', 'locked');
+
+  const { layout, tick } = state;
+  const mode = regulationMode(layout, tick);
+
+  // --- 1. regulation --------------------------------------------------------
+  if (!v.emergency) {
+    if (mode === 'controller' && !controllerPermits(layout.controller!, tick, v.from, v.turn)) {
+      return decision('violation', 'controller');
+    }
+    if (mode === 'signal' && !isGo(aspectAt(layout.signals!, v.from, tick))) {
+      return decision('violation', 'red_light');
+    }
   }
-  return ok();
+
+  // --- 2. space-time collision with vehicles already crossing ---------------
+  const hits = spaceTimeConflicts(v, state);
+  if (hits.length > 0) {
+    return decision('violation', mode === 'roundabout' ? 'roundabout_ring' : 'crossing_traffic', hits);
+  }
+
+  // --- 3. right-of-way graph ------------------------------------------------
+  const g = buildYieldGraph(state, mode, v);
+  const vi = g.nodes.indexOf(v);
+  const out = g.adj[vi];
+  if (out.length === 0) return decision('go', null);
+
+  const comp = tarjanScc(g.nodes.length, g.adj);
+  const c = comp[vi];
+  let size = 0;
+  let terminal = true;
+  for (let i = 0; i < g.nodes.length; i++) {
+    if (comp[i] !== c) continue;
+    size++;
+    for (const j of g.adj[i]) if (comp[j] !== c) terminal = false;
+  }
+  if (size > 1 && terminal) return decision('go', null, [], true);
+
+  let best: Reason = 'left_turn';
+  for (const j of out) {
+    const r = g.reasons.get(vi * g.nodes.length + j)!;
+    if ((REASON_RANK[r] ?? 0) > (REASON_RANK[best] ?? 0)) best = r;
+  }
+  return decision(
+    'violation',
+    best,
+    out.map((j) => g.nodes[j].id),
+  );
 }
