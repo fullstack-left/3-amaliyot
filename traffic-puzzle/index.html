@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="uz">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Chorraha Boshqaruvi — Traffic Puzzle</title>
+    <style>
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; background: #0f172a; color: #e5e7eb;
+        font-family: system-ui, "Segoe UI", Roboto, sans-serif; }
+      #app { display: flex; flex-direction: column; height: 100%; }
+      header {
+        display: flex; align-items: center; gap: 16px; padding: 10px 16px;
+        background: #111827; border-bottom: 1px solid #1f2937; flex-wrap: wrap;
+      }
+      header h1 { font-size: 16px; margin: 0; letter-spacing: .5px; }
+      .chip { background: #1f2937; padding: 4px 10px; border-radius: 999px; font-size: 14px; }
+      #msg { margin-left: auto; font-weight: 600; min-height: 20px; }
+      #game { flex: 1; width: 100%; display: block; cursor: pointer; }
+      footer { padding: 8px 16px; background: #111827; border-top: 1px solid #1f2937;
+        font-size: 12px; color: #9ca3af; display: flex; gap: 16px; flex-wrap: wrap; }
+      kbd { background: #374151; border-radius: 4px; padding: 1px 6px; font-size: 11px; }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <h1>🚦 Chorraha Boshqaruvi</h1>
+        <span class="chip" id="level">Bosqich 1</span>
+        <span class="chip" id="lives">❤️❤️❤️</span>
+        <span class="chip" id="coins">🪙 0</span>
+        <span class="chip" id="pose"></span>
+        <span id="msg"></span>
+      </header>
+      <canvas id="game"></canvas>
+      <footer>
+        <span>🖱️ Mashinani bosing — u harakatlansin</span>
+        <span><kbd>R</kbd> qayta boshlash</span>
+        <span><kbd>N</kbd> keyingi bosqich</span>
+        <span><kbd>P</kbd> oldingi bosqich</span>
+        <span>Bosqich tugagach 2 marta bosing — davom eting</span>
+      </footer>
+    </div>
+    <script type="module" src="./dist/demo/main.js"></script>
+  </body>
+</html>
