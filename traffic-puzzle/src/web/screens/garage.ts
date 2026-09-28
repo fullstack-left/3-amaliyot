@@ -1,12 +1,14 @@
 /** Garage: buy local car models, paints and (humorous) tuning; live rotating preview. */
 
-import { MODELS, MODS, PAINTS, type GarageItem } from '../../content/garage.js';
+import { findAchievement } from '../../content/achievements.js';
+import { EXCLUSIVE_MODS, EXCLUSIVE_PAINTS, isExclusive, MODELS, MODS, PAINTS, type GarageItem } from '../../content/garage.js';
 import type { App } from '../app.js';
 import { clear, h } from '../dom.js';
 import { icon, type IconName } from '../icons.js';
 import { localCamera } from '../render/camera.js';
+import { withGrade } from '../render/color.js';
 import { lookFor } from '../render/looks.js';
-import { drawLightBar, drawNeon, drawVehicleVector, Pose } from '../render/vehicles.js';
+import { drawFlag, drawLightBar, drawNeon, drawVehicleVector, Pose } from '../render/vehicles.js';
 
 type Tab = 'model' | 'paint' | 'mod';
 
@@ -49,12 +51,21 @@ export function mountGarage(root: HTMLElement, app: App): () => void {
       ),
     );
     clear(listEl);
-    const items: readonly GarageItem[] = tab === 'model' ? MODELS : tab === 'paint' ? PAINTS : MODS;
+    const items: readonly GarageItem[] = tab === 'model' ? MODELS : tab === 'paint' ? [...PAINTS, ...EXCLUSIVE_PAINTS] : [...MODS, ...EXCLUSIVE_MODS];
     for (const it of items) {
       const owned = s.owned.includes(it.id);
+      const exclusive = isExclusive(it);
       const equipped = it.kind === 'model' ? s.loadout.model === it.id : it.kind === 'paint' ? s.loadout.paint === it.id : s.loadout.mods.includes(it.id);
       let action: HTMLElement;
-      if (!owned) {
+      if (!owned && exclusive) {
+        const ach = it.kind !== 'model' && it.exclusive ? findAchievement(it.exclusive) : undefined;
+        action = h(
+          'button',
+          { class: 'btn small ghost lock-note', title: ach?.desc ?? '', onclick: () => { sfx.click(); store.getState().go('achievements'); } },
+          icon('trophy'),
+          ` Yutuq: ${ach?.title ?? '?'}`,
+        );
+      } else if (!owned) {
         action = h(
           'button',
           {
@@ -79,9 +90,9 @@ export function mountGarage(root: HTMLElement, app: App): () => void {
       listEl.appendChild(
         h(
           'div',
-          { class: `item-card${equipped ? ' equipped' : ''}` },
-          it.kind === 'paint' ? h('div', { class: 'swatch', style: { background: it.color } }) : h('div', { class: 'item-icon' }, icon(it.kind === 'model' ? 'car' : 'wrench')),
-          h('div', { class: 'item-name' }, it.name),
+          { class: `item-card${equipped ? ' equipped' : ''}${exclusive ? ' exclusive' : ''}${exclusive && !owned ? ' locked' : ''}` },
+          it.kind === 'paint' ? h('div', { class: 'swatch', style: { background: it.color } }) : h('div', { class: 'item-icon' }, icon(it.kind === 'model' ? 'car' : exclusive ? 'trophy' : 'wrench')),
+          h('div', { class: 'item-name' }, it.name, exclusive ? h('span', { class: 'tag' }, 'maxsus') : null),
           it.kind === 'mod' ? h('div', { class: 'item-desc' }, it.desc) : null,
           action,
         ),
@@ -115,9 +126,12 @@ export function mountGarage(root: HTMLElement, app: App): () => void {
     const s = store.getState().save;
     const look = lookFor({ id: 'hero', kind: 'car', hero: true }, { levelId: 0, ownedModels: [], hero: s.loadout });
     const pose = new Pose(cam).set(0, 0, now / 2200);
-    if (look.mods.includes('neon')) drawNeon(ctx, pose, look, now);
-    drawVehicleVector(ctx, pose, look);
-    drawLightBar(ctx, pose, look, now, false);
+    withGrade('day', () => {
+      if (look.mods.includes('neon')) drawNeon(ctx, pose, look, now);
+      drawVehicleVector(ctx, pose, look);
+      drawLightBar(ctx, pose, look, now, false);
+      if (look.mods.includes('bayroq')) drawFlag(ctx, pose, look, now);
+    });
     raf = requestAnimationFrame(draw);
   };
 

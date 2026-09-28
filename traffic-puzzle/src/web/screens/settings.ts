@@ -3,13 +3,17 @@
 import type { App } from '../app.js';
 import { clear, h } from '../dom.js';
 import { icon, type IconName } from '../icons.js';
-import type { Settings } from '../save.js';
+import { NAME_MAX, type Settings } from '../save.js';
 
-const TOGGLES: [keyof Settings, IconName, string, string][] = [
+type BoolKey = { [K in keyof Settings]: Settings[K] extends boolean ? K : never }[keyof Settings];
+
+const TOGGLES: [BoolKey, IconName, string, string][] = [
   ['sound', 'sound', 'Ovoz', 'YPX hushtagi, sirena, tanga ovozlari'],
   ['vibrate', 'whistle', 'Tebranish', 'Jarimada telefon titraydi (qo‘llab-quvvatlansa)'],
-  ['assist', 'check', "Oldindan ko'rsatish", "Sichqoncha ustida: yo'l yashil — mumkin, qizil — mumkin emas"],
+  ['assist', 'eye', "Oldindan ko'rsatish va \"Nega?\"", "Sichqoncha ustida (telefonda — uzoq bosib): yo'l yashil — mumkin, qizil — mumkin emas, sababi bilan"],
   ['controllerArrows', 'cop', 'Oson rejim (boss)', 'Regulirovshik ishorasini matn va belgilar bilan tushuntirish'],
+  ['keyHints', 'keyboard', 'Klaviatura raqamlari', "Oldingi mashinalar ustida 1–4 raqamlari (Shimol, Sharq, Janub, G'arb)"],
+  ['effects', 'fire', 'Effektlar', "Uchqunlar, tutun, yomg'ir tomchilari, ekran silkinishi, konfetti"],
   ['spriteCache', 'car', 'Sprayt kesh', "Mashinalarni oldindan chizib qo'yish (tez). O'chirib, farqni solishtiring"],
   ['perf', 'clock', 'Performance paneli', 'FPS, kadr vaqti, kesh statistikasi'],
   ['unlockAll', 'lock', 'Barcha bosqichlarni ochish', "O'qituvchi / test rejimi"],
@@ -23,6 +27,17 @@ export function mountSettings(root: HTMLElement, app: App): () => void {
   const emailIn = h('input', { type: 'email', placeholder: 'email (ixtiyoriy)', autocomplete: 'email' });
   const passIn = h('input', { type: 'password', placeholder: 'parol (ixtiyoriy)', autocomplete: 'current-password' });
   const toggles = h('div', { class: 'settings-list' });
+  const volume = h('input', {
+    type: 'range',
+    min: '0',
+    max: '100',
+    step: '5',
+    'aria-label': 'Ovoz balandligi',
+    oninput: (e: Event) => store.getState().setSetting('volume', Number((e.target as HTMLInputElement).value) / 100),
+    onchange: () => sfx.coin(),
+  });
+  const volumeOut = h('span', { class: 'slider-val' });
+  const nameIn = h('input', { type: 'text', maxlength: String(NAME_MAX), placeholder: 'Ismingiz (reyting uchun)', autocomplete: 'nickname' });
 
   function render() {
     const s = store.getState();
@@ -39,6 +54,9 @@ export function mountSettings(root: HTMLElement, app: App): () => void {
       });
       toggles.appendChild(h('label', { class: 'setting' }, input, h('span', null, h('b', null, icon(ic), ` ${label}`), h('small', null, desc))));
     }
+    if (document.activeElement !== volume) volume.value = String(Math.round(set.volume * 100));
+    volumeOut.textContent = `${Math.round(set.volume * 100)}%`;
+    if (document.activeElement !== nameIn) nameIn.value = s.save.profile.name;
     const c = s.save.cloud;
     if (document.activeElement !== urlIn) urlIn.value = c.url;
     if (document.activeElement !== keyIn) keyIn.value = c.anonKey;
@@ -60,7 +78,41 @@ export function mountSettings(root: HTMLElement, app: App): () => void {
       'div',
       { class: 'page' },
       h('header', { class: 'page-head' }, h('button', { class: 'btn ghost', onclick: () => store.getState().go('menu') }, icon('back'), 'Menyu'), h('h1', null, 'Sozlamalar')),
-      h('section', { class: 'card' }, h('h2', null, "O'yin"), toggles),
+      h(
+        'section',
+        { class: 'card' },
+        h('h2', null, "O'yin"),
+        toggles,
+        h('label', { class: 'setting slider-row' }, h('span', null, h('b', null, icon('sound'), ' Ovoz balandligi'), h('small', null, 'Barcha ovozlar uchun')), volume, volumeOut),
+      ),
+      h(
+        'section',
+        { class: 'card' },
+        h('h2', null, icon('user'), ' Profil'),
+        h('p', { class: 'muted' }, "Ism reyting jadvalida ko'rinadi (bulutga ulanganda). 2–24 belgi."),
+        h(
+          'div',
+          { class: 'form-row' },
+          nameIn,
+          h('button', { class: 'btn small', onclick: () => { store.getState().setProfileName(nameIn.value); store.getState().notify('Ism saqlandi', 'ok', 'user'); } }, 'Saqlash'),
+        ),
+      ),
+      h(
+        'section',
+        { class: 'card' },
+        h('h2', null, icon('keyboard'), ' Klaviatura'),
+        h(
+          'ul',
+          { class: 'kbd-list cols' },
+          h('li', null, h('kbd', null, '1'), '–', h('kbd', null, '4'), " Shimol / Sharq / Janub / G'arb mashinasini yuborish"),
+          h('li', null, h('kbd', null, 'H'), ' Maslahat'),
+          h('li', null, h('kbd', null, 'F'), ' 2× tezlik'),
+          h('li', null, h('kbd', null, 'M'), ' Ovozni o‘chirish/yoqish'),
+          h('li', null, h('kbd', null, 'R'), ' Qayta boshlash'),
+          h('li', null, h('kbd', null, 'P'), ' / ', h('kbd', null, 'Esc'), ' Pauza'),
+          h('li', null, h('kbd', null, '?'), ' Bosqich qoidasi'),
+        ),
+      ),
       h(
         'section',
         { class: 'card' },

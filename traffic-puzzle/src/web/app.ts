@@ -113,6 +113,9 @@ export interface AppOptions {
   readonly now?: () => Date;
 }
 
+/** Past daily challenges that can still be played from a link (today − N … today). Future days never. */
+export const DAILY_ARCHIVE_DAYS = 6;
+
 let toastId = 0;
 const NO_REWARD: Reward = { total: 0, vehicles: 0, completion: 0, stars: 0 };
 
@@ -217,8 +220,11 @@ export function createApp(storage: Storage | null = typeof localStorage === 'und
       },
 
       playDaily(day) {
-        const key = day ?? get().today();
-        if (Number.isNaN(dayIndexOf(key))) return;
+        const todayKey = get().today();
+        let key = day ?? todayKey;
+        const d = dayIndexOf(key);
+        const t = dayIndexOf(todayKey);
+        if (Number.isNaN(d) || d > t || d < t - DAILY_ARCHIVE_DAYS) key = todayKey;
         navigate('play', { kind: 'daily', day: key });
       },
 

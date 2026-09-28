@@ -70,15 +70,17 @@ const TREE_SPOTS = [
 ];
 /** Footprints (with margin) that trees must avoid when an arm is closed (T junction). */
 function closureRects(layout) {
+    const c = closures(layout);
     const out = [];
-    if (!layout.armEnabled[0])
-        out.push([-2.2, -6.6, 2.2, -1.5]);
-    if (!layout.armEnabled[1])
-        out.push([1.5, -2.1, 6.6, 2.1]);
-    if (!layout.armEnabled[2])
-        out.push([-2.2, 1.5, 2.2, 3.2]);
-    if (!layout.armEnabled[3])
-        out.push([-6.8, -2.2, -1.5, 2.2]);
+    const add = (r, m = 0.4) => out.push([r.x0 - m, r.y0 - m, r.x1 + m, r.y1 + m]);
+    if (c.school)
+        add({ x0: c.school.x0, y0: c.school.y0, x1: c.school.x1, y1: c.schoolHedge.y1 });
+    if (c.tea)
+        add(c.tea);
+    if (c.south !== null)
+        add({ x0: -1.8, y0: 1.9 + c.south, x1: 1.8, y1: 3.0 + c.south });
+    if (c.west)
+        add(c.west);
     return out;
 }
 /** Distance from a ground point to the nearest place a vehicle can be (0 = on it). */
@@ -1064,6 +1066,78 @@ function vignette(ctx, w, h, env) {
     ctx.fillStyle = gr;
     ctx.fillRect(0, 0, w, h);
 }
+// ---------------------------------------------------------------------------
+// City layout (single source of truth for drawing, shadows and the occlusion test)
+// ---------------------------------------------------------------------------
+const PANEL_A = { x0: -9.8, y0: -5.2, x1: -5.4, y1: -2.4, floors: 5, color: '#e7dcc8', accent: '#8fb8c8', balconies: true };
+const PANEL_B = { x0: -10.5, y0: -10.5, x1: -6.8, y1: -7.2, floors: 9, color: '#d9d4c7', accent: '#c96f4a', balconies: true };
+const PANEL_C = { x0: 4.4, y0: -8.2, x1: 8.6, y1: -5.2, floors: 5, color: '#c9d6df', accent: '#e9edf1', balconies: true };
+const PANEL_D = { x0: -9.6, y0: 4.4, x1: -5.6, y1: 7.6, floors: 4, color: '#e9d8c0', accent: '#7fb3a0', balconies: true };
+const SHOPS = { x0: 3.0, y0: -3.9, x1: 8.4, y1: -2.4 };
+function closures(layout) {
+    const round = layout.type === 'roundabout';
+    const n = round ? 1.1 : 0; // N/W setback
+    const e = round ? 1.6 : 0; // E/S setback (the viewer side needs more room)
+    const on = layout.armEnabled;
+    return {
+        school: on[0] ? null : { x0: -1.8, y0: -6.0 - n, x1: 1.8, y1: -2.4 - n, floors: 3, color: '#f0d9b5', accent: '#e9edf1', sign: 'MAKTAB 110' },
+        schoolHedge: on[0] ? null : { x0: -1.8, y0: -2.1 - n, x1: 1.8, y1: -1.85 - n },
+        tea: on[1] ? null : { x0: 2.4 + e, y0: -1.7, x1: 6.2 + e, y1: 1.7 },
+        south: on[2] ? null : e,
+        west: on[3] ? null : { x0: -6.4 - n, y0: -1.8, x1: -2.4 - n, y1: 1.8, floors: 5, color: '#dfe3d6', accent: '#c96f4a', balconies: true },
+    };
+}
+const HOUSE_1 = { x0: -6.2, y0: 9.6, x1: -3.4, y1: 11.8 };
+const HOUSE_2 = { x0: -11.6, y0: 9.0, x1: -8.8, y1: 11.2 };
+/** Panel height incl. the roof machine room. */
+const panelHeight = (p) => p.floors * FLOOR_H + 0.22 + 0.34;
+/**
+ * Conservative bounding boxes of everything painted into the static layer
+ * (buildings incl. balconies/canopies/awnings, parked cars, park furniture,
+ * T-junction closures, static trees). Used by tests/scene.test.mjs to prove
+ * that no static object can cover a vehicle standing behind it.
+ */
+export function staticBoxes(layout) {
+    const panel = (name, p) => ({ name, x0: p.x0, y0: p.y0, x1: p.x1, y1: p.y1 + 0.24, h: panelHeight(p) });
+    const out = [
+        panel('panel A', PANEL_A),
+        panel('panel B', PANEL_B),
+        panel('panel C', PANEL_C),
+        panel('panel D', PANEL_D),
+        { name: 'mosque', x0: -5.3, y0: -8.9, x1: -2.7, y1: -6.3, h: 3.4 },
+        { name: 'minaret', x0: -3.03, y0: -6.33, x1: -2.27, y1: -5.57, h: 4.45 },
+        { name: 'shops', x0: SHOPS.x0, y0: SHOPS.y0, x1: SHOPS.x1, y1: SHOPS.y1 + 0.39, h: 1.24 },
+        { name: 'kiosk', x0: -6.45, y0: 2.35, x1: -5.08, y1: 3.52, h: 1.03 },
+        { name: 'bus stop', x0: -5.13, y0: 2.2, x1: -2.75, y1: 2.95, h: 1.37 },
+        { name: 'house 1', x0: HOUSE_1.x0 - 0.5, y0: HOUSE_1.y0 - 0.4, x1: HOUSE_1.x1 + 0.4, y1: HOUSE_1.y1 + 0.45, h: 1.4 },
+        { name: 'house 2', x0: HOUSE_2.x0 - 0.5, y0: HOUSE_2.y0 - 0.4, x1: HOUSE_2.x1 + 0.4, y1: HOUSE_2.y1 + 0.45, h: 1.4 },
+        { name: 'parked cars', x0: 4.55, y0: 2.75, x1: 9.15, y1: 4.15, h: 0.85 },
+        { name: 'P sign', x0: 4.47, y0: 2.4, x1: 4.83, y1: 2.5, h: 1.26 },
+        { name: 'park hedge', x0: 2.4, y0: 5.0, x1: 13.0, y1: 5.22, h: 0.28 },
+        { name: 'park hedge W', x0: 2.4, y0: 5.0, x1: 2.62, y1: 13.6, h: 0.28 },
+        { name: 'fountain', x0: 4.45, y0: 6.15, x1: 6.55, y1: 8.25, h: 1.06 },
+        { name: 'playground', x0: 2.9, y0: 10.4, x1: 5.5, y1: 12.4, h: 0.85 },
+        { name: 'benches', x0: 4.25, y0: 6.35, x1: 6.9, y1: 8.06, h: 0.38 },
+    ];
+    const c = closures(layout);
+    if (c.school)
+        out.push(panel('school', c.school));
+    if (c.schoolHedge)
+        out.push({ name: 'school hedge', ...c.schoolHedge, h: 0.28 });
+    if (c.tea)
+        out.push({ name: 'choyxona', x0: c.tea.x0 - 0.05, y0: c.tea.y0, x1: c.tea.x1, y1: c.tea.y1, h: 0.9 });
+    if (c.south !== null) {
+        const o = c.south;
+        out.push({ name: 'south hedge', x0: -1.8, y0: 1.9 + o, x1: 1.8, y1: 2.1 + o, h: 0.28 }, { name: 'south bench', x0: -0.35, y0: 2.3 + o, x1: 0.35, y1: 2.51 + o, h: 0.38 });
+    }
+    if (c.west)
+        out.push(panel('west block', c.west));
+    for (const t of sceneInfo(layout).staticTrees) {
+        const r = (t.kind === 'poplar' ? 0.34 : 0.55) * t.size;
+        out.push({ name: `tree ${t.x},${t.y}`, x0: t.x - r, y0: t.y - r, x1: t.x + r, y1: t.y + r, h: (t.kind === 'poplar' ? 2.65 : 1.62) * t.size });
+    }
+    return out;
+}
 export function renderScene(ctx, cam, layout, opts = { ambience: 'day' }) {
     const w = cam.width;
     const h = cam.height;
@@ -1095,55 +1169,51 @@ export function renderScene(ctx, cam, layout, opts = { ambience: 'day' }) {
         flowerBed(ctx, cam, 2.55, 2.55, 0.55, env.rnd);
     parking(ctx, cam, layout);
     // building shadows (ground), then lamp light pools
-    const shadows = [
-        [-9.8, -5.2, -5.4, -2.4, 5 * FLOOR_H + 0.22],
-        [-10.5, -10.5, -6.8, -7.2, 9 * FLOOR_H + 0.22],
-        [-5.3, -8.9, -2.7, -6.3, 2.2],
-        [3.0, -3.9, 8.4, -2.4, 1.0],
-        [4.4, -8.2, 8.6, -5.2, 5 * FLOOR_H + 0.22],
-        [-9.6, 4.4, -5.6, 7.6, 4 * FLOOR_H + 0.22],
-    ];
-    for (const [a, b, c, d, hh] of shadows)
-        shadowOf(ctx, cam, a, b, c, d, hh, shadowK);
+    for (const p of [PANEL_A, PANEL_B, PANEL_C, PANEL_D])
+        shadowOf(ctx, cam, p.x0, p.y0, p.x1, p.y1, p.floors * FLOOR_H + 0.22, shadowK);
+    shadowOf(ctx, cam, -5.3, -8.9, -2.7, -6.3, 2.2, shadowK);
+    shadowOf(ctx, cam, SHOPS.x0, SHOPS.y0, SHOPS.x1, SHOPS.y1, 1.0, shadowK);
+    const cl = closures(layout);
+    for (const p of [cl.school, cl.west])
+        if (p)
+            shadowOf(ctx, cam, p.x0, p.y0, p.x1, p.y1, p.floors * FLOOR_H + 0.22, shadowK);
     lampPools(ctx, cam, info, env);
     // buildings, back to front
     const list = [];
     const add = (x0, y0, x1, y1, draw) => list.push({ depth: (x0 + x1 + y0 + y1) / 2, draw });
-    const A = { x0: -9.8, y0: -5.2, x1: -5.4, y1: -2.4, floors: 5, color: '#e7dcc8', accent: '#8fb8c8', balconies: true };
-    const B = { x0: -10.5, y0: -10.5, x1: -6.8, y1: -7.2, floors: 9, color: '#d9d4c7', accent: '#c96f4a', balconies: true };
-    const C = { x0: 4.4, y0: -8.2, x1: 8.6, y1: -5.2, floors: 5, color: '#c9d6df', accent: '#e9edf1', balconies: true };
-    const D = { x0: -9.6, y0: 4.4, x1: -5.6, y1: 7.6, floors: 4, color: '#e9d8c0', accent: '#7fb3a0', balconies: true };
-    add(A.x0, A.y0, A.x1, A.y1, () => panelBlock(ctx, cam, A, env));
-    add(B.x0, B.y0, B.x1, B.y1, () => panelBlock(ctx, cam, B, env));
-    add(C.x0, C.y0, C.x1, C.y1, () => panelBlock(ctx, cam, C, env));
-    add(D.x0, D.y0, D.x1, D.y1, () => panelBlock(ctx, cam, D, env));
+    for (const p of [PANEL_A, PANEL_B, PANEL_C, PANEL_D])
+        add(p.x0, p.y0, p.x1, p.y1, () => panelBlock(ctx, cam, p, env));
     add(-5.3, -8.9, -2.4, -5.7, () => mosque(ctx, cam, env));
-    add(3.0, -3.9, 8.4, -2.4, () => shopRow(ctx, cam, 3.0, -3.9, 8.4, -2.4, env));
+    add(SHOPS.x0, SHOPS.y0, SHOPS.x1, SHOPS.y1, () => shopRow(ctx, cam, SHOPS.x0, SHOPS.y0, SHOPS.x1, SHOPS.y1, env));
     add(-6.4, 2.4, -5.2, 3.4, () => kiosk(ctx, cam, env));
     add(-4.6, 2.3, -2.8, 2.9, () => busStop(ctx, cam, env));
-    add(-6.2, 9.6, -3.4, 11.8, () => house(ctx, cam, -6.2, 9.6, -3.4, 11.8, '#efe4cf', '#b4533a', env));
-    add(-11.6, 9.0, -8.8, 11.2, () => house(ctx, cam, -11.6, 9.0, -8.8, 11.2, '#e7ddd0', '#7a8ea3', env));
+    add(HOUSE_1.x0, HOUSE_1.y0, HOUSE_1.x1, HOUSE_1.y1, () => house(ctx, cam, HOUSE_1.x0, HOUSE_1.y0, HOUSE_1.x1, HOUSE_1.y1, '#efe4cf', '#b4533a', env));
+    add(HOUSE_2.x0, HOUSE_2.y0, HOUSE_2.x1, HOUSE_2.y1, () => house(ctx, cam, HOUSE_2.x0, HOUSE_2.y0, HOUSE_2.x1, HOUSE_2.y1, '#e7ddd0', '#7a8ea3', env));
     // closures of missing arms (T junctions)
-    if (!layout.armEnabled[0]) {
-        const S = { x0: -1.8, y0: -6.0, x1: 1.8, y1: -2.4, floors: 3, color: '#f0d9b5', accent: '#e9edf1', sign: 'MAKTAB 110' };
-        add(S.x0, S.y0, S.x1, S.y1, () => {
-            panelBlock(ctx, cam, S, env);
-            hedge(ctx, cam, -1.8, -2.1, 1.8, -1.85);
+    if (cl.school) {
+        const school = cl.school;
+        const hg = cl.schoolHedge;
+        add(school.x0, school.y0, school.x1, school.y1, () => {
+            panelBlock(ctx, cam, school, env);
+            hedge(ctx, cam, hg.x0, hg.y0, hg.x1, hg.y1);
         });
     }
-    if (!layout.armEnabled[1])
-        add(2.4, -1.7, 6.2, 1.7, () => teaHouse(ctx, cam, 2.4, -1.7, 6.2, 1.7, env));
-    if (!layout.armEnabled[2]) {
-        add(-1.8, 1.9, 1.8, 2.8, () => {
-            hedge(ctx, cam, -1.8, 1.9, 1.8, 2.1);
-            flowerBed(ctx, cam, -0.9, 2.6, 0.4, env.rnd);
-            flowerBed(ctx, cam, 0.9, 2.6, 0.4, env.rnd);
-            bench(ctx, cam, -0.35, 2.3, true);
+    if (cl.tea) {
+        const t = cl.tea;
+        add(t.x0, t.y0, t.x1, t.y1, () => teaHouse(ctx, cam, t.x0, t.y0, t.x1, t.y1, env));
+    }
+    if (cl.south !== null) {
+        const o = cl.south;
+        add(-1.8, 1.9 + o, 1.8, 2.8 + o, () => {
+            hedge(ctx, cam, -1.8, 1.9 + o, 1.8, 2.1 + o);
+            flowerBed(ctx, cam, -0.9, 2.6 + o, 0.4, env.rnd);
+            flowerBed(ctx, cam, 0.9, 2.6 + o, 0.4, env.rnd);
+            bench(ctx, cam, -0.35, 2.3 + o, true);
         });
     }
-    if (!layout.armEnabled[3]) {
-        const Wb = { x0: -6.4, y0: -1.8, x1: -2.4, y1: 1.8, floors: 5, color: '#dfe3d6', accent: '#c96f4a', balconies: true };
-        add(Wb.x0, Wb.y0, Wb.x1, Wb.y1, () => panelBlock(ctx, cam, Wb, env));
+    if (cl.west) {
+        const wb = cl.west;
+        add(wb.x0, wb.y0, wb.x1, wb.y1, () => panelBlock(ctx, cam, wb, env));
     }
     for (const t of info.staticTrees)
         list.push({ depth: t.x + t.y, draw: () => drawTree(ctx, cam, t.x, t.y, t.size, t.kind) });
