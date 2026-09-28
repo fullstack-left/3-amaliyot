@@ -82,7 +82,7 @@ const TWO_PHASE = {
 // ---------------------------------------------------------------------------
 // Levels
 // ---------------------------------------------------------------------------
-export const HANDMADE = [
+const HANDMADE_LEVELS = [
     {
         id: 1,
         name: "O'ng qo'l qoidasi",
@@ -348,6 +348,59 @@ export const HANDMADE = [
         ],
     },
 ];
+// ---------------------------------------------------------------------------
+// Interactive coach (first lessons). Steps list every vehicle in a legal order;
+// tests/modes.test.mjs replays them and fails if any step is illegal.
+// ---------------------------------------------------------------------------
+export const COACH = {
+    1: [
+        { vehicle: 'E0', text: "Sharqdan kelayotgan mashinaning o'ng tomoni bo'sh — u birinchi o'tadi. Uni bosing!" },
+        { vehicle: 'S0', text: "Endi janubdagi mashinaning o'ng tomoni bo'shadi. Yo'l ochiq — yuboring." },
+    ],
+    2: [
+        { vehicle: 'E0', text: "Zanjir boshi: sharqdagi mashinaning o'ngida hech kim yo'q." },
+        { vehicle: 'S0', text: 'Janubdagi mashina sharqdagini kutgan edi. Endi uning navbati.' },
+        { vehicle: 'W0', text: "G'arbdagi mashina janubdagini kutdi. Oxirgisini yuboring." },
+    ],
+    3: [
+        { vehicle: 'E0', text: "O'ngga burilayotgan mashina hech kimning yo'lini kesmaydi — bemalol yuboring." },
+        { vehicle: 'N0', text: "Shimoldagi mashina to'g'riga ketadi, uning o'ng tomoni bo'sh." },
+        { vehicle: 'S0', text: "Chapga buriluvchi qarshidan kelgan mashinani kutdi. Endi o'tishi mumkin." },
+    ],
+    5: [
+        { vehicle: 'S0', text: 'Tez yordam — doimo birinchi! Sirenali mashinani yuboring.' },
+        { vehicle: 'E0', text: "Sharqdagi mashinaning o'ng tomoni bo'sh." },
+        { vehicle: 'W0', text: 'Chapga buriluvchi qarshidagi mashinani kutdi — endi uning navbati.' },
+    ],
+    11: [
+        { vehicle: 'S0', text: "Sariq romb — asosiy yo'l. Janubdagi mashina o'ng tomonga qaramasdan o'tadi." },
+        { vehicle: 'N0', text: "Shimoldagi mashina ham asosiy yo'lda — yuboring." },
+        { vehicle: 'E0', text: "Asosiy yo'l bo'shadi. Endi \"yo'l bering\" tomonidagilar o'tadi." },
+        { vehicle: 'W0', text: 'Chapga buriluvchi qarshidagi mashinani kutdi. Endi uning navbati.' },
+    ],
+    21: [
+        { vehicle: 'N0', text: 'Shimol–janub yo‘nalishida yashil yondi. Yashilda yuring!' },
+        { vehicle: 'S0', text: "Qarshi tomon ham yashil — to'g'ri ketayotganlar bir-birini kesmaydi." },
+        { vehicle: 'N1', text: "Navbatdagi mashina ham yashilda o'ngga buriladi." },
+        { vehicle: 'E0', text: 'Endi sharq–g‘arb yashil. Qizilda kutganlar yo‘lga chiqadi.' },
+        { vehicle: 'W0', text: "G'arbdagi mashina ham yashilda." },
+        { vehicle: 'W1', text: 'Oxirgi mashina — yashil o‘chmasdan yuboring!' },
+    ],
+    31: [
+        { vehicle: 'S0', text: "Aylanmada hamma soat miliga teskari yuradi. O'ngga buriluvchining yo'li eng qisqa." },
+        { vehicle: 'N0', text: "Halqada hozir xalaqit beradigan mashina yo'q — kiring." },
+        { vehicle: 'E0', text: "Halqadagi mashina o'tib ketgach kiring — bo'sh oynani kuting." },
+        { vehicle: 'W0', text: "Oxirgisi: halqa bo'shashini kuting va yuboring." },
+    ],
+};
+/** Lighting per campaign level (cosmetic). Levels not listed are daytime. */
+export const AMBIENCE_BY_ID = {
+    8: 'evening', 10: 'evening', 16: 'rain', 18: 'evening', 19: 'rain', 20: 'evening',
+    24: 'night', 26: 'rain', 27: 'night', 28: 'evening', 29: 'rain', 30: 'night',
+    36: 'rain', 37: 'evening', 39: 'rain', 40: 'evening',
+    42: 'night', 43: 'rain', 44: 'evening', 46: 'night', 47: 'evening', 49: 'rain', 50: 'night',
+};
+export const HANDMADE = HANDMADE_LEVELS.map((l) => (COACH[l.id] ? { ...l, coach: COACH[l.id] } : l));
 export function handmade(id) {
     return HANDMADE.find((l) => l.id === id);
 }

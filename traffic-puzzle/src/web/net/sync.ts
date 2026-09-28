@@ -10,6 +10,7 @@
  * Rejected runs (4xx) are dropped; network failures keep them for next time.
  */
 
+import { dayKeyFromIndex, dayIndexOfId, isDailyId } from '../../content/daily.js';
 import type { LevelProgress, PendingRun, SaveData } from '../save.js';
 import { SupaClient, SupaError } from './supabase.js';
 
@@ -26,7 +27,10 @@ export interface SyncOutcome {
   rejected: number;
   kept: PendingRun[];
   coins: number | null;
+  /** Campaign progress (ids 1..1000). */
   progress: Record<string, LevelProgress>;
+  /** Daily results by day key (server ids 100000+). */
+  daily: Record<string, LevelProgress>;
   owned: string[] | null;
   userId: string;
 }
@@ -59,13 +63,17 @@ export async function syncNow(client: SupaClient, save: SaveData): Promise<SyncO
   const items = await client.select<{ item_id: string }>('garage_items', 'select=item_id');
 
   const progress: Record<string, LevelProgress> = { ...save.progress };
-  for (const r of rows) {
-    const k = String(r.level_id);
-    const local = progress[k];
-    progress[k] = {
+  const daily: Record<string, LevelProgress> = { ...save.daily.results };
+  const merge = (map: Record<string, LevelProgress>, k: string, r: ProgressRow) => {
+    const local = map[k];
+    map[k] = {
       stars: Math.max(local?.stars ?? 0, r.stars),
       bestMs: local ? Math.min(local.bestMs, r.best_time_ms) : r.best_time_ms,
     };
+  };
+  for (const r of rows) {
+    if (isDailyId(r.level_id)) merge(daily, dayKeyFromIndex(dayIndexOfId(r.level_id)), r);
+    else if (r.level_id >= 1 && r.level_id <= 1000) merge(progress, String(r.level_id), r);
   }
 
   return {
@@ -74,6 +82,7 @@ export async function syncNow(client: SupaClient, save: SaveData): Promise<SyncO
     kept,
     coins: profile ? profile.coins : null,
     progress,
+    daily,
     owned: items.map((i) => i.item_id),
     userId: session.userId,
   };
@@ -88,4 +97,24 @@ export async function purchaseRemote(client: SupaClient, itemId: string): Promis
 export async function saveLoadoutRemote(client: SupaClient, loadout: SaveData['loadout']): Promise<void> {
   await client.ensureSession();
   await client.rpc('set_loadout', { p_model: loadout.model, p_paint: loadout.paint, p_mods: loadout.mods });
+}
+
+/** Public display name for leaderboards (profiles.display_name, RLS: own row only). */
+export async function setDisplayNameRemote(client: SupaClient, name: string): Promise<void> {
+  const session = await client.ensureSession();
+  await client.update('profiles', `id=eq.${encodeURIComponent(session.userId)}`, { display_name: name });
+}
+
+export interface LeaderboardRow {
+  rank: number;
+  display_name: string;
+  stars: number;
+  best_time_ms: number;
+  is_me: boolean;
+}
+
+/** Top results for a level (campaign or daily id); `is_me` marks the caller's row. */
+export async function fetchLeaderboard(client: SupaClient, levelId: number, limit = 10): Promise<LeaderboardRow[]> {
+  await client.ensureSession();
+  return client.rpc<LeaderboardRow[]>('leaderboard', { p_level: levelId, p_limit: limit });
 }

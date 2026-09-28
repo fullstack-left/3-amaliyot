@@ -210,3 +210,83 @@ test('validator reports precise errors (uz)', () => {
   assert.match(sig.errors.join(), /aynan bitta fazada/);
   assert.throws(() => loadLevel(bad));
 });
+
+
+// ---------------------------------------------------------------------------
+// v3: end reasons, gridlock (endless), counters, waitSince, validator additions
+// ---------------------------------------------------------------------------
+
+test('end reason: cleared on win, lives on loss; result carries violations by rule', () => {
+  const win = engineFor(cross({ S: ['car:s'], E: ['car:s'] }));
+  win.tap('S0'); // right-hand violation
+  stepSeconds(win, 1);
+  win.tap('E0');
+  stepSeconds(win, 2);
+  win.tap('S0');
+  stepSeconds(win, 3);
+  const r = win.result();
+  assert.equal(r.endReason, 'cleared');
+  assert.deepEqual(r.violations, { right_hand: 1 });
+
+  const lose = engineFor(cross({ S: ['car:s'], E: ['car:s'] }, { lives: 1 }));
+  lose.tap('S0');
+  assert.equal(lose.status, 'lost');
+  assert.equal(lose.result().endReason, 'lives');
+});
+
+test('gridlock: a lane longer than overflowAt ends the run (endless mode)', () => {
+  const arrivals = Array.from({ length: 6 }, (_, i) => ({ kind: 'car', turn: 'straight', atMs: 300 + i * 300 }));
+  const level = makeLevel('cross', [arm('N'), arm('E'), arm('S', ['car:s'], { arrivals }), arm('W')]);
+  const events = [];
+  const eng = engineFor(level, { overflowAt: 4 });
+  eng.on((e) => events.push(e.type));
+  stepSeconds(eng, 3);
+  assert.equal(eng.status, 'lost');
+  assert.equal(eng.endReason, 'gridlock');
+  assert.ok(eng.laneCount(2) > 4);
+  assert.deepEqual(events.slice(-2), ['gridlock', 'lost']);
+  // without the option the same level never gridlocks
+  const free = engineFor(level);
+  stepSeconds(free, 3);
+  assert.equal(free.status, 'playing');
+});
+
+test('counters: deadlocks resolved and emergency vehicles sent', () => {
+  const eng = engineFor(cross({ N: ['car:s'], E: ['car:s'], S: ['ambulance:s'], W: ['car:s'] }));
+  eng.tap('S0'); // ambulance first (always legal)
+  assert.equal(eng.emergencyDeparted, 1);
+  const dl = engineFor(cross({ N: ['car:s'], E: ['car:s'], S: ['car:s'], W: ['car:s'] }));
+  assert.equal(dl.tap('N0').deadlock, true);
+  assert.equal(dl.deadlocks, 1);
+  assert.equal(dl.result().deadlocks, 1);
+});
+
+test('waitSince: set when a front vehicle stops at the line, cleared on departure', () => {
+  const eng = engineFor(cross({ W: ['car:r', 'car:s'] }));
+  const [a, b] = ['W0', 'W1'].map((id) => eng.byId.get(id));
+  assert.equal(a.waitSince, 0);
+  assert.equal(b.waitSince, -1);
+  eng.tap('W0');
+  assert.equal(a.waitSince, -1);
+  let guard = 0;
+  while (b.state !== 'waiting' && guard++ < 300) eng.step();
+  assert.equal(b.state, 'waiting');
+  assert.ok(b.waitSince > 0 && b.waitSince <= eng.tick);
+});
+
+test('validator: ambience, coach and vehicle limits', () => {
+  const base = {
+    id: 5, name: 'x', band: 'base', junction: 'cross',
+    arms: ['N', 'E', 'S', 'W'].map((d) => ({ dir: d, queue: d === 'S' ? [{ kind: 'car', turn: 'straight' }] : [] })),
+  };
+  assert.equal(validateLevel({ ...base, ambience: 'night', coach: [{ vehicle: 'S0', text: 'Bosing' }] }).ok, true);
+  assert.match(validateLevel({ ...base, ambience: 'fog' }).errors.join(), /ambience/);
+  assert.match(validateLevel({ ...base, coach: [{ vehicle: 'E0', text: 'x' }] }).errors.join(), /"E0" mashinasi yo'q/);
+  assert.match(validateLevel({ ...base, coach: [] }).errors.join(), /coach/);
+  const many = { ...base, arms: base.arms.map((a) => ({ ...a, arrivals: Array.from({ length: 30 }, (_, i) => ({ kind: 'car', turn: 'right', atMs: i * 1000 })) })) };
+  assert.match(validateLevel(many).errors.join(), /Ko'pi bilan 80/);
+  assert.equal(validateLevel(many, { maxVehicles: 400 }).ok, true);
+  const lvl = loadLevel({ ...base, ambience: 'rain' });
+  assert.equal(lvl.ambience, 'rain');
+  assert.deepEqual(lvl.coach, []);
+});

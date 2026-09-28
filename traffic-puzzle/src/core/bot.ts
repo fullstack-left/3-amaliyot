@@ -15,7 +15,7 @@
  * movement is permitted at some point, the bot finishes.
  */
 
-import { GameEngine } from './engine.js';
+import { GameEngine, type EngineOptions } from './engine.js';
 import type { Level } from './level.js';
 import { makeReplay, type Replay } from './replay.js';
 import { canVehicleMove } from './rules.js';
@@ -24,6 +24,8 @@ import type { Vehicle } from './types.js';
 export interface AutoplayOptions {
   reactionTicks?: number;
   maxTicks?: number;
+  /** Extra engine options (e.g. `overflowAt` for endless mode). */
+  engine?: EngineOptions;
 }
 
 export interface AutoplayResult {
@@ -31,6 +33,7 @@ export interface AutoplayResult {
   readonly ticks: number;
   readonly taps: number;
   readonly penalties: number;
+  readonly cleared: number;
   readonly replay: Replay;
 }
 
@@ -48,7 +51,7 @@ export function legalMoves(engine: GameEngine): Vehicle[] {
 export function autoplay(level: Level, opts: AutoplayOptions = {}): AutoplayResult {
   const reaction = opts.reactionTicks ?? 12;
   const maxTicks = opts.maxTicks ?? 60 * 60 * 6;
-  const engine = new GameEngine(level, { parMs: Number.POSITIVE_INFINITY });
+  const engine = new GameEngine(level, { parMs: Number.POSITIVE_INFINITY, ...opts.engine });
   let cooldown = 0;
   let taps = 0;
   while (engine.status === 'playing' && engine.tick < maxTicks) {
@@ -69,6 +72,7 @@ export function autoplay(level: Level, opts: AutoplayOptions = {}): AutoplayResu
     ticks: engine.endTick >= 0 ? engine.endTick : engine.tick,
     taps,
     penalties: engine.mistakes,
+    cleared: engine.cleared,
     replay: makeReplay(engine),
   };
 }

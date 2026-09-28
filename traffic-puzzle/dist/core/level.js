@@ -15,8 +15,10 @@ export const BANDS = ['base', 'complex', 'roundabout', 'boss'];
 export const JUNCTION_TYPES = ['cross', 't', 'roundabout'];
 export const SIGN_TYPES = ['none', 'main', 'yield', 'stop'];
 export const GESTURES = ['arms_side', 'right_forward', 'arm_up'];
+export const AMBIENCES = ['day', 'evening', 'night', 'rain'];
 export const MAX_VEHICLES = 80;
 export const MAX_QUEUE = 7;
+export const MAX_COACH_STEPS = 12;
 const isObj = (x) => typeof x === 'object' && x !== null && !Array.isArray(x);
 const isNum = (x) => typeof x === 'number' && Number.isFinite(x);
 function checkSpawn(x, where, errors) {
@@ -39,7 +41,7 @@ function checkSpawn(x, where, errors) {
     }
     return ok;
 }
-export function validateLevel(input) {
+export function validateLevel(input, limits = {}) {
     const errors = [];
     const warnings = [];
     if (!isObj(input))
@@ -59,6 +61,9 @@ export function validateLevel(input) {
     }
     if (d.parMs !== undefined && (!isNum(d.parMs) || d.parMs <= 0))
         errors.push('parMs: musbat son');
+    if (d.ambience !== undefined && !AMBIENCES.includes(d.ambience))
+        errors.push(`ambience: ${AMBIENCES.join(' | ')}`);
+    const vehicleIds = new Set();
     const armsSet = new Set();
     let total = 0;
     const spawnsToCheck = [];
@@ -102,6 +107,9 @@ export function validateLevel(input) {
             if (stopU + laneLen > DESPAWN_U - 0.3)
                 errors.push(`${w}.queue: navbat yo'lga sig'maydi (juda uzun)`);
             const arrivals = a.arrivals;
+            const count = queue.length + (Array.isArray(arrivals) ? arrivals.length : 0);
+            for (let k = 0; k < count; k++)
+                vehicleIds.add(`${dir}${k}`);
             if (arrivals !== undefined) {
                 if (!Array.isArray(arrivals))
                     errors.push(`${w}.arrivals: massiv bo'lishi kerak`);
@@ -140,8 +148,25 @@ export function validateLevel(input) {
     }
     if (total < 1)
         errors.push("Kamida bitta mashina bo'lishi kerak");
-    if (total > MAX_VEHICLES)
-        errors.push(`Ko'pi bilan ${MAX_VEHICLES} ta mashina`);
+    const maxVehicles = limits.maxVehicles ?? MAX_VEHICLES;
+    if (total > maxVehicles)
+        errors.push(`Ko'pi bilan ${maxVehicles} ta mashina`);
+    // coach (interactive tutorial)
+    if (d.coach !== undefined) {
+        if (!Array.isArray(d.coach) || d.coach.length === 0 || d.coach.length > MAX_COACH_STEPS) {
+            errors.push(`coach: 1..${MAX_COACH_STEPS} ta qadamdan iborat massiv`);
+        }
+        else {
+            d.coach.forEach((c, i) => {
+                if (!isObj(c) || typeof c.vehicle !== 'string' || typeof c.text !== 'string' || !c.text.trim()) {
+                    errors.push(`coach[${i}]: { vehicle: "E0", text: "..." }`);
+                }
+                else if (!vehicleIds.has(c.vehicle)) {
+                    errors.push(`coach[${i}].vehicle: "${c.vehicle}" mashinasi yo'q`);
+                }
+            });
+        }
+    }
     // signals
     if (d.signals !== undefined) {
         const sp = d.signals;
@@ -219,8 +244,8 @@ export function validateLevel(input) {
     }
     return { ok: errors.length === 0, errors, warnings };
 }
-export function loadLevel(def) {
-    const v = validateLevel(def);
+export function loadLevel(def, limits = {}) {
+    const v = validateLevel(def, limits);
     if (!v.ok)
         throw new Error(`Level ${String(def.id)} noto'g'ri:\n- ${v.errors.join('\n- ')}`);
     const armEnabled = [false, false, false, false];
@@ -282,6 +307,8 @@ export function loadLevel(def) {
         lives: def.lives ?? 3,
         parMs: def.parMs,
         spawns,
+        ambience: def.ambience ?? 'day',
+        coach: def.coach ?? [],
     };
 }
 //# sourceMappingURL=level.js.map

@@ -5,9 +5,16 @@
 
 export class Sfx {
   enabled = true;
+  private volume = 0.8;
   private ctx: AudioContext | null = null;
   private master: GainNode | null = null;
   private lastSiren = 0;
+
+  /** Master volume 0..1 (the synthesised mix peaks around 0.6 of full scale). */
+  setVolume(v: number): void {
+    this.volume = Math.max(0, Math.min(1, v));
+    if (this.master && this.ctx) this.master.gain.setTargetAtTime(this.volume * 0.62, this.ctx.currentTime, 0.02);
+  }
 
   unlock(): void {
     if (!this.ctx) {
@@ -15,7 +22,7 @@ export class Sfx {
       if (!AC) return;
       this.ctx = new AC();
       this.master = this.ctx.createGain();
-      this.master.gain.value = 0.5;
+      this.master.gain.value = this.volume * 0.62;
       this.master.connect(this.ctx.destination);
     }
     if (this.ctx.state === 'suspended') void this.ctx.resume();

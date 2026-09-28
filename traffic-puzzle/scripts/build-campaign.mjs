@@ -6,14 +6,15 @@
  *
  * 1. hand-made levels are taken as-is,
  * 2. every other id comes from the seeded generator (bot-verified, 0 penalties),
- * 3. par time is computed for every level by the autoplay bot,
+ * 3. cosmetic ambience (evening / night / rain) is applied from AMBIENCE_BY_ID,
+ *    par time is computed for every level by the autoplay bot,
  * 4. result → src/content/campaign.data.ts (+ levels/campaign.json for tools / Supabase seed).
  */
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { autoplay, computePar, loadLevel, validateLevel } from '../dist/core/index.js';
-import { HANDMADE } from '../dist/content/handmade.js';
+import { AMBIENCE_BY_ID, HANDMADE } from '../dist/content/handmade.js';
 import { CURRICULUM, buildGeneratedLevel } from '../dist/content/generator.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -34,6 +35,7 @@ for (let id = 1; id <= TOTAL; id++) {
     source = 'gen';
     seed = cand.seed;
   }
+  if (AMBIENCE_BY_ID[id]) def = { ...def, ambience: AMBIENCE_BY_ID[id] };
   const v = validateLevel(def);
   if (!v.ok) throw new Error(`Level ${id} invalid:\n${v.errors.join('\n')}`);
   const level = loadLevel(def);

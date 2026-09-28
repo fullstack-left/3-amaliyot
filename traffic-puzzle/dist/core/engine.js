@@ -41,6 +41,12 @@ export class GameEngine {
     vehicleCoins = 0;
     status = 'playing';
     endTick = -1;
+    endReason = null;
+    violations = {};
+    deadlocks = 0;
+    emergencyDeparted = 0;
+    departures = 0;
+    overflowAt;
     pending = [];
     lastDeparted = [null, null, null, null];
     listeners = [];
@@ -50,6 +56,7 @@ export class GameEngine {
         this.junction = getJunction(level.layout.geometry);
         this.lives = level.lives;
         this.parMs = opts.parMs ?? level.parMs ?? Number.POSITIVE_INFINITY;
+        this.overflowAt = opts.overflowAt ?? Number.POSITIVE_INFINITY;
         for (const sp of level.spawns) {
             const spec = VEHICLE_SPECS[sp.kind];
             const v = {
@@ -73,6 +80,7 @@ export class GameEngine {
                 flashUntil: -1,
                 lockUntil: -1,
                 clearedTick: -1,
+                waitSince: -1,
             };
             this.vehicles.push(v);
             this.byId.set(v.id, v);
@@ -88,6 +96,7 @@ export class GameEngine {
             this.queues[d].forEach((v, k) => {
                 v.u = u;
                 v.state = k === 0 ? 'waiting' : 'queued';
+                v.waitSince = k === 0 ? 0 : -1;
                 u += v.length + Q_GAP;
             });
         }
@@ -143,7 +152,19 @@ export class GameEngine {
             vehicleCoins: this.vehicleCoins,
             stars: completed ? computeStars(this.mistakes, timeMs, this.parMs) : 0,
             parMs: this.parMs,
+            endReason: this.endReason,
+            violations: { ...this.violations },
+            deadlocks: this.deadlocks,
+            emergency: this.emergencyDeparted,
+            departures: this.departures,
         };
+    }
+    end(status, reason) {
+        this.status = status;
+        this.endTick = this.tick;
+        this.endReason = reason;
+        const result = this.result();
+        this.emit(status === 'won' ? { type: 'won', result } : { type: 'lost', result });
     }
     // --- intent: tap ----------------------------------------------------------
     tap(id) {
@@ -159,6 +180,12 @@ export class GameEngine {
             v.startTick = this.tick;
             v.s = 0;
             v.speed = 0;
+            v.waitSince = -1;
+            this.departures++;
+            if (d.deadlock)
+                this.deadlocks++;
+            if (v.emergency)
+                this.emergencyDeparted++;
             const q = this.queues[v.from];
             const i = q.indexOf(v);
             if (i >= 0)
@@ -170,6 +197,7 @@ export class GameEngine {
             this.taps.push([this.tick, id]);
             this.lives--;
             this.mistakes++;
+            this.violations[d.reason] = (this.violations[d.reason] ?? 0) + 1;
             v.lockUntil = this.tick + LOCK_TICKS;
             v.flashUntil = this.tick + FLASH_TICKS;
             for (const c of d.culprits) {
@@ -178,11 +206,8 @@ export class GameEngine {
                     o.flashUntil = this.tick + FLASH_TICKS;
             }
             this.emit({ type: 'penalty', id, reason: d.reason, culprits: d.culprits, lives: this.lives, tick: this.tick });
-            if (this.lives <= 0) {
-                this.status = 'lost';
-                this.endTick = this.tick;
-                this.emit({ type: 'lost', result: this.result() });
-            }
+            if (this.lives <= 0)
+                this.end('lost', 'lives');
         }
         else {
             this.emit({ type: 'blocked', id, reason: d.reason, tick: this.tick });
@@ -194,8 +219,11 @@ export class GameEngine {
         if (this.status !== 'playing')
             return;
         const t = ++this.tick;
-        while (this.pending.length > 0 && this.pending[0].spawnTick <= t)
+        while (this.pending.length > 0 && this.pending[0].spawnTick <= t) {
             this.spawn(this.pending.shift());
+            if (this.status !== 'playing')
+                return;
+        }
         for (const v of this.vehicles) {
             if (v.state !== 'crossing' && v.state !== 'exiting')
                 continue;
@@ -215,11 +243,8 @@ export class GameEngine {
             }
         }
         this.updateLanes();
-        if (this.cleared === this.vehicles.length) {
-            this.status = 'won';
-            this.endTick = t;
-            this.emit({ type: 'won', result: this.result() });
-        }
+        if (this.cleared === this.vehicles.length)
+            this.end('won', 'cleared');
     }
     /** Advance n ticks (stops early when the level ends). */
     stepMany(n) {
@@ -234,6 +259,14 @@ export class GameEngine {
         v.state = 'queued';
         q.push(v);
         this.emit({ type: 'arrive', id: v.id, tick: this.tick });
+        if (q.length > this.overflowAt) {
+            this.emit({ type: 'gridlock', dir: v.from, tick: this.tick });
+            this.end('lost', 'gridlock');
+        }
+    }
+    /** Vehicles currently in the lane of arm `d` (queued + approaching + waiting). */
+    laneCount(d) {
+        return this.queues[d].length;
     }
     /**
      * Lane kinematics: every vehicle drives toward its slot (front = stop line,
@@ -269,10 +302,18 @@ export class GameEngine {
                     v.u = target;
                     v.speed = 0;
                 }
-                if (k === 0)
-                    v.state = v.u === target && v.speed === 0 ? 'waiting' : 'approaching';
-                else
+                if (k === 0) {
+                    const waiting = v.u === target && v.speed === 0;
+                    if (waiting && v.state !== 'waiting')
+                        v.waitSince = this.tick;
+                    else if (!waiting)
+                        v.waitSince = -1;
+                    v.state = waiting ? 'waiting' : 'approaching';
+                }
+                else {
                     v.state = 'queued';
+                    v.waitSince = -1;
+                }
                 leaderRear = v.u + v.length;
                 target += v.length + Q_GAP;
             }

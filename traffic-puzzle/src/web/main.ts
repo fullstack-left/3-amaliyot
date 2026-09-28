@@ -19,6 +19,8 @@ const SCREENS: Record<Screen, typeof mountMenu> = {
   settings: mountSettings,
   rules: mountRules,
   editor: mountEditor,
+  stats: mountRules,
+  achievements: mountRules,
 };
 
 function boot(): void {

@@ -2,7 +2,7 @@
  * Play screen: fixed-timestep loop (60 Hz sim, interpolated render), input,
  * HUD, penalty feedback (whistle + red flash + heart loss), hints, modals.
  */
-import { BAND_INFO, getLevelDef, LEVEL_COUNT } from '../../content/campaign.js';
+import { BAND_INFO, LEVEL_COUNT } from '../../content/campaign.js';
 import { MODELS } from '../../content/garage.js';
 import { REASON_TEXT } from '../../content/rulesText.js';
 import { computePar, legalMoves } from '../../core/bot.js';
@@ -11,6 +11,7 @@ import { GameEngine } from '../../core/engine.js';
 import { TICK_MS } from '../../core/kinematics.js';
 import { loadLevel } from '../../core/level.js';
 import { makeReplay } from '../../core/replay.js';
+import { resolveTarget } from '../app.js';
 import { clear, fmtTime, h } from '../dom.js';
 import { icon, REASON_ICON, starRow } from '../icons.js';
 import { Renderer } from '../render/renderer.js';
@@ -22,10 +23,11 @@ const GESTURE_UZ = {
 };
 export function mountPlay(root, app) {
     const { store, sfx } = app;
-    const st0 = store.getState();
-    const custom = !!st0.custom;
-    const def = st0.custom ?? getLevelDef(st0.levelId);
-    if (!def) {
+    const target = store.getState().target;
+    const resolved = target ? resolveTarget(target) : null;
+    const custom = target?.kind === 'custom';
+    const def = resolved?.def;
+    if (!def || !target) {
         store.getState().go('levels');
         return () => undefined;
     }
@@ -233,7 +235,7 @@ export function mountPlay(root, app) {
     }
     function finish(result) {
         const replay = result.completed ? makeReplay(engine) : null;
-        const reward = store.getState().finishLevel(def, result, replay, custom);
+        const reward = store.getState().finishRun(target, def, result, replay, { hints: 0 }).reward;
         if (result.completed)
             sfx.win();
         else

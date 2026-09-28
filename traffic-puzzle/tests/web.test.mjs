@@ -14,6 +14,10 @@ class MemoryStorage {
   removeItem(k) { this.map.delete(k); }
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+export const RESULT = {
+  levelId: 1, completed: true, ticks: 600, timeMs: 10000, mistakes: 0, livesLeft: 3, cleared: 0, total: 0,
+  vehicleCoins: 0, stars: 3, parMs: 20000, endReason: 'cleared', violations: {}, deadlocks: 0, emergency: 0, departures: 0,
+};
 
 test('save: corrupt JSON is backed up and replaced with defaults', () => {
   const st = new MemoryStorage();
@@ -46,13 +50,17 @@ test('app: finishing a level awards coins once, keeps best stars/time, unlocks t
   const app = createApp(st);
   const level = getLevel(1);
   const bot = autoplay(level);
-  const result = { levelId: 1, completed: true, ticks: bot.ticks, timeMs: 4000, mistakes: 0, livesLeft: 3, cleared: 2, total: 2, vehicleCoins: 9, stars: 3, parMs: 5500 };
-  const r1 = app.store.getState().finishLevel(level.def, result, bot.replay, false);
+  const result = { ...RESULT, levelId: 1, ticks: bot.ticks, timeMs: 4000, cleared: 2, total: 2, vehicleCoins: 9, stars: 3, parMs: 5500 };
+  const campaign = { kind: 'campaign', id: 1 };
+  const r1 = app.store.getState().finishRun(campaign, level.def, result, bot.replay).reward;
   assert.equal(r1.total, 9 + 10 + 30);
   assert.equal(app.store.getState().save.coins, 49);
   assert.equal(isUnlocked(app.store.getState().save, 2), true);
-  const r2 = app.store.getState().finishLevel(level.def, { ...result, timeMs: 3500 }, bot.replay, false);
-  assert.equal(r2.total, 9); // no bonus, no new stars
+  const sum2 = app.store.getState().finishRun(campaign, level.def, { ...result, timeMs: 3500 }, bot.replay);
+  assert.equal(sum2.reward.total, 9); // no bonus, no new stars
+  assert.equal(sum2.newBestTime, true);
+  assert.equal(sum2.newStars, false);
+  assert.equal(sum2.prevBestMs, 4000);
   const s = app.store.getState().save;
   assert.equal(s.coins, 58);
   assert.deepEqual(s.progress['1'], { stars: 3, bestMs: 3500 });
@@ -64,10 +72,10 @@ test('app: finishing a level awards coins once, keeps best stars/time, unlocks t
 test('app: failed or custom levels give nothing', () => {
   const app = createApp(new MemoryStorage());
   const def = getLevel(3).def;
-  const lost = { levelId: 3, completed: false, ticks: 10, timeMs: 1000, mistakes: 3, livesLeft: 0, cleared: 0, total: 3, vehicleCoins: 0, stars: 0, parMs: 5000 };
-  assert.equal(app.store.getState().finishLevel(def, lost, null, false).total, 0);
-  const won = { ...lost, completed: true, stars: 3, vehicleCoins: 6 };
-  assert.equal(app.store.getState().finishLevel(def, won, null, true).total, 0);
+  const lost = { ...RESULT, levelId: 3, completed: false, ticks: 10, timeMs: 1000, mistakes: 3, livesLeft: 0, total: 3, endReason: 'lives' };
+  assert.equal(app.store.getState().finishRun({ kind: 'campaign', id: 3 }, def, lost, null).reward.total, 0);
+  const won = { ...lost, completed: true, stars: 3, vehicleCoins: 6, endReason: 'cleared' };
+  assert.equal(app.store.getState().finishRun({ kind: 'custom', def }, def, won, null).reward.total, 0);
   assert.equal(app.store.getState().save.coins, 0);
 });
 
@@ -160,4 +168,5 @@ test('sync: pushes pending runs, drops rejected, keeps offline ones, merges best
   assert.deepEqual(out.progress['1'], { stars: 3, bestMs: 4000 });
   assert.deepEqual(out.progress['2'], { stars: 1, bestMs: 9000 });
   assert.deepEqual(out.owned, ['cobalt']);
+  assert.deepEqual(out.daily, {});
 });

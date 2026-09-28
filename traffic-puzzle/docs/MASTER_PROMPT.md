@@ -144,3 +144,92 @@ Ustuvorlik tartibi (birinchi rad etgan g'olib):
 | R11 audio/UX | ✅ | brauzer e2e, 0 konsol xatosi, skrinshotlar `docs/screenshots/` |
 | R12 hujjatlar + CI | ✅ | README, ARCHITECTURE, docs/*, `.github/workflows/traffic-puzzle.yml` |
 
+
+
+---
+
+# v3 — REJA: funksionallik, chiroylilik, aniqlik
+
+> v2 tahlilidan keyingi reja. Maqsad: o'yinni "ishlaydigan prototip"dan **qayta-qayta o'ynaladigan, chiroyli va tushunarli** mahsulotga aylantirish.
+> Har bir band — o'lchanadigan qabul mezoni bilan.
+
+## 9. v2 tahlili: topilgan kamchiliklar
+
+| # | Kamchilik | Qayerda | Oqibati |
+|---|---|---|---|
+| K1 | Kamera yo'llarni kvadrat deb hisoblaydi (`width / 4R`), aslida yo'llar faqat o'qlar bo'ylab cho'ziladi | `render/camera.ts` | Mobilda chorraha ~1.6× kichik, ekranning yarmi bo'sh maysa |
+| K2 | Mashinaning niyati (yo'nalishi) va qaysi biri bosiladigani deyarli ko'rinmaydi | renderer | O'yinchi taxmin qiladi, "aniqlik" past |
+| K3 | "Nega mumkin emas?" faqat jarimadan KEYIN tushuntiriladi | play | O'rganish sekin |
+| K4 | Faqat kunduzgi sahna, fon siyrak, atmosfera yo'q | `render/scene.ts` | Vizual jihatdan bir xil |
+| K5 | 50 bosqich tugagach o'ynashga sabab yo'q (kunlik/cheksiz rejim, yutuqlar yo'q) | — | Qayta o'ynash yo'q |
+| K6 | O'yinchi qaysi qoidada ko'p xato qilishini bilmaydi | — | O'quv qiymati yo'qoladi |
+| K7 | Muharrirda `arrivals`, svetofor vaqtlari, regulirovshik pozalari tahrirlanmaydi; ko'rinish (preview) yo'q | `screens/editor.ts` | "Oson level yaratish" to'liq emas |
+| K8 | URL marshrutlash yo'q (orqaga tugmasi, havola, yangilash ekranni yo'qotadi); offlayn/o'rnatish yo'q | web | Mobil tajriba zaif |
+| K9 | Tanga ikonkasi "!"ga, "Qoidalar" ikonkasi telefonga o'xshaydi; shrift tizimga bog'liq | `icons.ts`, CSS | Sifatsiz ko'rinish |
+| K10 | Reyting SQL'da bor, lekin UI'da yo'q; kunlik rejim server tomonidan tekshirilmaydi | Supabase | Bulut funksiyasi yarim |
+
+## 10. v3 talablari
+
+### R13 — Aniq kamera (K1)
+- Kamera bosqich mazmuniga moslashadi: eng uzun navbat + yo'l uzunligi → `scale = min(W / (2·extent), H / (extent + balandlik))`.
+- ✅ Qabul: 390×844 mobil ekranda masshtab ≥ 30 px/birlik (v2: 21).
+
+### R14 — Tushunarlilik (K2, K3)
+- Oldingi mashinalar tepasida **niyat belgisi** (↑ ↰ ↱, maxsus transport — xoch).
+- **"Nega?" izohi:** sichqoncha ustida yoki uzoq bosishda ko'rsatiladi — qoida nomi va ustun mashinalarga chiziq.
+- **Murabbiy (coach):** 1–3-bosqichlarda "qo'l" to'g'ri mashinani ko'rsatadi, izoh esa mashina bo'yicha yoziladi.
+- **Sabr pufakchasi:** uzoq kutgan mashina ustida "…", keyin signal chaladi (kosmetik).
+- ✅ Qabul: coach matnlari validator bilan tekshiriladi, e2e da qo'l to'g'ri mashina ustida.
+
+### R15 — Atmosfera va vizual boylik (K4, K9)
+- `ambience`: kunduz / kechqurun / tun / yomg'ir. Tunda mashina faralari, stop-chiroqlari, fonar yorug'ligi va yonib turgan derazalar bo'ladi; yomg'irda tomchilar va ho'l asfalt.
+- Fon: panel uylar (balkonlari bilan), minorali masjid, do'konlar qatori, fonarlar, bekat; yo'lda yo'nalish strelkalari, lyuklar va asfalt teksturasi.
+- Effektlar: chiqish tutuni, tanga uchqunlari, jarimada ekran silkinishi, g'alabada konfetti; hammasi "Effektlar" sozlamasi va `prefers-reduced-motion` ga bo'ysunadi.
+- Roboto shrifti ilova bilan birga keladi; tanga va kitob ikonkalari qayta chiziladi.
+- ✅ Qabul: 24 mashina tunda + yomg'irda ham 60 fps (headless), render < 2 ms/kadr.
+
+### R16 — Yangi rejimlar (K5)
+- **Kunlik chorraha:** sanadan deterministik generatsiya qilinadi; haftaning har kuni o'z mavzusiga ega; ketma-ketlik (streak) hisoblanadi; server ham tekshira oladi (id = 100000 + kun raqami).
+- **Cheksiz tirbandlik:** oqim tobora zichlashadi; navbat 8 tadan oshsa — "tirbandlik" (game over); rekord saqlanadi. 3 variant: X-chorraha, svetofor, aylanma.
+- ✅ Qabul: 14 ketma-ket kunning har biri validatsiyadan o'tadi va avtopilot uni jazosiz yechadi. Cheksiz rejimda hech narsa bosilmasa, tirbandlik bilan tugaydi.
+
+### R17 — Yutuqlar va statistika (K6)
+- 18 ta yutuq. Mukofot — eksklyuziv kosmetika: oltin rang, tungi ko'k rang, O'zbekiston bayroqchasi. Tangalar server bilan ziddiyatga kirmasligi uchun tanga berilmaydi.
+- Statistika: aniqlik %, qoida bo'yicha xatolar diagrammasi, **"zaif joy"** va shu qoidani o'rgatuvchi bosqichga "Mashq qilish" tugmasi.
+- ✅ Qabul: yutuq baholash — toza funksiya, testlangan.
+
+### R18 — Boshqaruv va UX (K8)
+- Hash-marshrutlash: `#/levels`, `#/play/12`, `#/daily`, `#/endless/cross`, `#/custom/<level>`. Orqaga tugmasi va sahifani yangilash ishlaydi.
+- Klaviatura: `1–4` — yo'l bo'yicha oldingi mashina, `F` — 2× tezlik, `M` — ovoz, `H`, `R`, `P`. HUD'da 2× va ovoz tugmalari.
+- Natija oynasi: yulduzlar animatsiyasi, tangalarning sanab ko'rsatilishi, "Yangi rekord!", ulashish tugmasi.
+- **PWA:** manifest, service worker (offlayn), ikonkalar, "Ilovani o'rnatish".
+- ✅ Qabul: e2e — offlayn holatda sahifa yangilansa ham o'yin ochiladi; orqaga tugmasi ishlaydi.
+
+### R19 — Muharrir v2 (K7)
+- `arrivals`, svetofor fazalari va vaqtlari, regulirovshik pozalarini tahrirlash, atmosfera tanlovi.
+- Jonli ko'rinish (preview canvas).
+- **Havola orqali ulashish:** level URL ichida keladi, ochgan odam uni o'ynaydi.
+- ✅ Qabul: encode → decode natijasi aynan bir xil (test); e2e da havola ochiladi va o'ynaladi.
+
+### R20 — Supabase v3 (K10)
+- Migratsiya 2: kunlik id'lar, `leaderboard` qaytaradigan `is_me` ustuni.
+- Edge function kunlik levelni o'zi generatsiya qilib tekshiradi (±1 kun oynasi).
+- UI: natija oynasida reyting (TOP-5), sozlamalarda ism.
+- ✅ Qabul: mock testlar — kunlik bosqich qabul/rad etilishi, reyting va ism so'rovlari formati.
+
+### R21 — Sifat
+- Barcha yangi toza mantiq testlanadi; umumiy testlar ≥ 90 ta, hammasi yashil.
+- e2e yangilanadi, skrinshotlar yangilanadi, konsolda 0 ta xato. Hujjatlar va CI yangilanadi.
+
+## 11. v3 bajarish rejasi
+
+- [ ] 13. Reja (shu bo'lim)
+- [ ] 14. Core: `ambience`, `coach`, `maxVehicles`, tirbandlik (overflow), `endReason`, `waitSince` + testlar
+- [ ] 15. Kontent: kunlik va cheksiz generatorlar, yutuqlar, mashq xaritasi, eksklyuziv kosmetika, kampaniyaga atmosfera + coach + testlar
+- [ ] 16. Saqlash v2 + app store: rejimlar, statistika, yutuqlar, streak, marshrutlash + testlar
+- [ ] 17. Render v3: kamera, sahna (binolar, detallar, atmosfera), fonarlar, faralar, yomg'ir, zarrachalar, niyat belgilari, izoh chiziqlari, silkinish
+- [ ] 18. Ekranlar: play v3, menyu v3, bosqichlar, statistika, yutuqlar, cheksiz, garaj, sozlamalar
+- [ ] 19. Muharrir v2 + havola orqali ulashish
+- [ ] 20. Shrift, ikonkalar, PWA (manifest, SW, ikonkalar), marshrutlash
+- [ ] 21. Supabase v3 (migratsiya, edge function, reyting UI) + testlar
+- [ ] 22. e2e + perf + skrinshotlar, hujjatlar, CI, commit, push, PR

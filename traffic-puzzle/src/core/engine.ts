@@ -38,7 +38,7 @@ import {
   type Reason,
 } from './rules.js';
 import { aspectAt, ticksUntilChange } from './signals.js';
-import type { Aspect, Dir, RegulationMode, Vehicle } from './types.js';
+import type { Aspect, Dir, EndReason, RegulationMode, Vehicle } from './types.js';
 import { computeStars } from './scoring.js';
 import { HERO_BONUS, VEHICLE_SPECS } from './vehicles.js';
 
@@ -57,6 +57,14 @@ export interface LevelResult {
   readonly vehicleCoins: number;
   readonly stars: number;
   readonly parMs: number;
+  readonly endReason: EndReason | null;
+  /** Violations committed during the run, by rule. */
+  readonly violations: Readonly<Partial<Record<Reason, number>>>;
+  /** Deadlocks resolved ("drivers agreed") and emergency vehicles sent through. */
+  readonly deadlocks: number;
+  readonly emergency: number;
+  /** Legal departures (taps that sent a vehicle). */
+  readonly departures: number;
 }
 
 export type EngineEvent =
@@ -72,12 +80,18 @@ export type EngineEvent =
     }
   | { readonly type: 'cleared'; readonly id: string; readonly coins: number; readonly tick: number }
   | { readonly type: 'arrive'; readonly id: string; readonly tick: number }
+  | { readonly type: 'gridlock'; readonly dir: Dir; readonly tick: number }
   | { readonly type: 'won'; readonly result: LevelResult }
   | { readonly type: 'lost'; readonly result: LevelResult };
 
 export interface EngineOptions {
   /** Override the level's par time (ms) used for the "fast" star. */
   parMs?: number;
+  /**
+   * Endless mode: the run is lost ("gridlock") as soon as more than this many
+   * vehicles are in one lane. Undefined = never.
+   */
+  overflowAt?: number;
 }
 
 export type EngineStatus = 'playing' | 'won' | 'lost';
@@ -100,6 +114,12 @@ export class GameEngine implements IntersectionState {
   vehicleCoins = 0;
   status: EngineStatus = 'playing';
   endTick = -1;
+  endReason: EndReason | null = null;
+  readonly violations: Partial<Record<Reason, number>> = {};
+  deadlocks = 0;
+  emergencyDeparted = 0;
+  departures = 0;
+  readonly overflowAt: number;
 
   private readonly pending: Vehicle[] = [];
   private readonly lastDeparted: (Vehicle | null)[] = [null, null, null, null];
@@ -111,6 +131,7 @@ export class GameEngine implements IntersectionState {
     this.junction = getJunction(level.layout.geometry);
     this.lives = level.lives;
     this.parMs = opts.parMs ?? level.parMs ?? Number.POSITIVE_INFINITY;
+    this.overflowAt = opts.overflowAt ?? Number.POSITIVE_INFINITY;
 
     for (const sp of level.spawns) {
       const spec = VEHICLE_SPECS[sp.kind];
@@ -135,6 +156,7 @@ export class GameEngine implements IntersectionState {
         flashUntil: -1,
         lockUntil: -1,
         clearedTick: -1,
+        waitSince: -1,
       };
       this.vehicles.push(v);
       this.byId.set(v.id, v);
@@ -149,6 +171,7 @@ export class GameEngine implements IntersectionState {
       this.queues[d].forEach((v, k) => {
         v.u = u;
         v.state = k === 0 ? 'waiting' : 'queued';
+        v.waitSince = k === 0 ? 0 : -1;
         u += v.length + Q_GAP;
       });
     }
@@ -212,7 +235,20 @@ export class GameEngine implements IntersectionState {
       vehicleCoins: this.vehicleCoins,
       stars: completed ? computeStars(this.mistakes, timeMs, this.parMs) : 0,
       parMs: this.parMs,
+      endReason: this.endReason,
+      violations: { ...this.violations },
+      deadlocks: this.deadlocks,
+      emergency: this.emergencyDeparted,
+      departures: this.departures,
     };
+  }
+
+  private end(status: 'won' | 'lost', reason: EndReason): void {
+    this.status = status;
+    this.endTick = this.tick;
+    this.endReason = reason;
+    const result = this.result();
+    this.emit(status === 'won' ? { type: 'won', result } : { type: 'lost', result });
   }
 
   // --- intent: tap ----------------------------------------------------------
@@ -228,6 +264,10 @@ export class GameEngine implements IntersectionState {
       v.startTick = this.tick;
       v.s = 0;
       v.speed = 0;
+      v.waitSince = -1;
+      this.departures++;
+      if (d.deadlock) this.deadlocks++;
+      if (v.emergency) this.emergencyDeparted++;
       const q = this.queues[v.from];
       const i = q.indexOf(v);
       if (i >= 0) q.splice(i, 1);
@@ -237,6 +277,7 @@ export class GameEngine implements IntersectionState {
       this.taps.push([this.tick, id]);
       this.lives--;
       this.mistakes++;
+      this.violations[d.reason!] = (this.violations[d.reason!] ?? 0) + 1;
       v.lockUntil = this.tick + LOCK_TICKS;
       v.flashUntil = this.tick + FLASH_TICKS;
       for (const c of d.culprits) {
@@ -244,11 +285,7 @@ export class GameEngine implements IntersectionState {
         if (o) o.flashUntil = this.tick + FLASH_TICKS;
       }
       this.emit({ type: 'penalty', id, reason: d.reason!, culprits: d.culprits, lives: this.lives, tick: this.tick });
-      if (this.lives <= 0) {
-        this.status = 'lost';
-        this.endTick = this.tick;
-        this.emit({ type: 'lost', result: this.result() });
-      }
+      if (this.lives <= 0) this.end('lost', 'lives');
     } else {
       this.emit({ type: 'blocked', id, reason: d.reason!, tick: this.tick });
     }
@@ -260,7 +297,10 @@ export class GameEngine implements IntersectionState {
     if (this.status !== 'playing') return;
     const t = ++this.tick;
 
-    while (this.pending.length > 0 && this.pending[0].spawnTick <= t) this.spawn(this.pending.shift()!);
+    while (this.pending.length > 0 && this.pending[0].spawnTick <= t) {
+      this.spawn(this.pending.shift()!);
+      if (this.status !== 'playing') return;
+    }
 
     for (const v of this.vehicles) {
       if (v.state !== 'crossing' && v.state !== 'exiting') continue;
@@ -282,11 +322,7 @@ export class GameEngine implements IntersectionState {
 
     this.updateLanes();
 
-    if (this.cleared === this.vehicles.length) {
-      this.status = 'won';
-      this.endTick = t;
-      this.emit({ type: 'won', result: this.result() });
-    }
+    if (this.cleared === this.vehicles.length) this.end('won', 'cleared');
   }
 
   /** Advance n ticks (stops early when the level ends). */
@@ -302,6 +338,15 @@ export class GameEngine implements IntersectionState {
     v.state = 'queued';
     q.push(v);
     this.emit({ type: 'arrive', id: v.id, tick: this.tick });
+    if (q.length > this.overflowAt) {
+      this.emit({ type: 'gridlock', dir: v.from, tick: this.tick });
+      this.end('lost', 'gridlock');
+    }
+  }
+
+  /** Vehicles currently in the lane of arm `d` (queued + approaching + waiting). */
+  laneCount(d: Dir): number {
+    return this.queues[d].length;
   }
 
   /**
@@ -336,8 +381,15 @@ export class GameEngine implements IntersectionState {
           v.u = target;
           v.speed = 0;
         }
-        if (k === 0) v.state = v.u === target && v.speed === 0 ? 'waiting' : 'approaching';
-        else v.state = 'queued';
+        if (k === 0) {
+          const waiting = v.u === target && v.speed === 0;
+          if (waiting && v.state !== 'waiting') v.waitSince = this.tick;
+          else if (!waiting) v.waitSince = -1;
+          v.state = waiting ? 'waiting' : 'approaching';
+        } else {
+          v.state = 'queued';
+          v.waitSince = -1;
+        }
         leaderRear = v.u + v.length;
         target += v.length + Q_GAP;
       }

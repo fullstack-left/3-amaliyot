@@ -7,8 +7,9 @@
  *                   POST /auth/v1/token?grant_type=password      sign-in
  *                   POST /auth/v1/token?grant_type=refresh_token refresh
  *                   GET  /auth/v1/user                          current user
- *   PostgREST       GET  /rest/v1/<table>?<query>
- *                   POST /rest/v1/rpc/<fn>
+ *   PostgREST       GET   /rest/v1/<table>?<query>
+ *                   PATCH /rest/v1/<table>?<filter>   (Prefer: return=minimal)
+ *                   POST  /rest/v1/rpc/<fn>
  *   Functions       POST /functions/v1/<name>
  * Every request carries `apikey: <anon key>`; authenticated ones add
  * `Authorization: Bearer <access_token>`.
@@ -121,6 +122,10 @@ export class SupaClient {
     // ---- data ----------------------------------------------------------------
     select(table, query) {
         return this.request('GET', `/rest/v1/${table}?${query}`);
+    }
+    /** PATCH rows matching `filter` (PostgREST syntax, e.g. `id=eq.<uuid>`); RLS decides what is allowed. */
+    update(table, filter, values) {
+        return this.request('PATCH', `/rest/v1/${table}?${filter}`, values, true, { Prefer: 'return=minimal' });
     }
     rpc(fn, args) {
         return this.request('POST', `/rest/v1/rpc/${fn}`, args);

@@ -25,6 +25,10 @@ export type BodySide = 'chest' | 'back' | 'left' | 'right';
 export type Aspect = 'green' | 'green_flash' | 'amber' | 'red' | 'red_amber' | 'flashing_amber';
 export type Band = 'base' | 'complex' | 'roundabout' | 'boss';
 export type RegulationMode = 'controller' | 'signal' | 'roundabout' | 'priority' | 'equal';
+/** Purely cosmetic lighting/weather of a level (never affects the rules). */
+export type Ambience = 'day' | 'evening' | 'night' | 'rain';
+/** Why a run ended: every vehicle cleared, out of lives, or a lane overflowed (endless mode). */
+export type EndReason = 'cleared' | 'lives' | 'gridlock';
 
 /**
  * Vehicle lifecycle (state machine):
@@ -103,6 +107,16 @@ export interface LevelIntro {
   text: string;
 }
 
+/**
+ * One step of the interactive coach (tutorial levels): the UI points at
+ * `vehicle` (an id such as "E0") and shows `text`. The step is done when that
+ * vehicle departs; steps are expected in a legal solving order (tested).
+ */
+export interface CoachStep {
+  vehicle: string;
+  text: string;
+}
+
 export interface LevelDef {
   id: number;
   name: string;
@@ -117,6 +131,10 @@ export interface LevelDef {
   intro?: LevelIntro;
   tip?: string;
   tags?: string[];
+  /** Lighting/weather (cosmetic). Default: day. */
+  ambience?: Ambience;
+  /** Interactive tutorial steps. */
+  coach?: CoachStep[];
 }
 
 // ---------------------------------------------------------------------------
@@ -148,4 +166,6 @@ export interface Vehicle {
   flashUntil: number;
   lockUntil: number;
   clearedTick: number;
+  /** Tick at which the vehicle stopped at the line (state 'waiting'), −1 otherwise. Cosmetic (impatience). */
+  waitSince: number;
 }

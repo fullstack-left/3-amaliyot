@@ -31,7 +31,7 @@ export function legalMoves(engine) {
 export function autoplay(level, opts = {}) {
     const reaction = opts.reactionTicks ?? 12;
     const maxTicks = opts.maxTicks ?? 60 * 60 * 6;
-    const engine = new GameEngine(level, { parMs: Number.POSITIVE_INFINITY });
+    const engine = new GameEngine(level, { parMs: Number.POSITIVE_INFINITY, ...opts.engine });
     let cooldown = 0;
     let taps = 0;
     while (engine.status === 'playing' && engine.tick < maxTicks) {
@@ -53,6 +53,7 @@ export function autoplay(level, opts = {}) {
         ticks: engine.endTick >= 0 ? engine.endTick : engine.tick,
         taps,
         penalties: engine.mistakes,
+        cleared: engine.cleared,
         replay: makeReplay(engine),
     };
 }

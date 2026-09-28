@@ -34,6 +34,8 @@ export interface Paint {
   readonly name: string;
   readonly price: number;
   readonly color: string;
+  /** Achievement id that unlocks this item (not purchasable). */
+  readonly exclusive?: string;
 }
 
 export interface Mod {
@@ -42,6 +44,7 @@ export interface Mod {
   readonly name: string;
   readonly price: number;
   readonly desc: string;
+  readonly exclusive?: string;
 }
 
 export type GarageItem = CarModel | Paint | Mod;
@@ -89,13 +92,31 @@ export const MODS: readonly Mod[] = [
   { kind: 'mod', id: 'gilam', name: 'Tomda gilam', price: 80, desc: 'Bozordan qaytyapmiz — tomda o‘ralgan gilam.' },
 ];
 
+/** Achievement rewards — cannot be bought (not in the server shop catalog). */
+export const EXCLUSIVE_PAINTS: readonly Paint[] = [
+  { kind: 'paint', id: 'oltin', name: 'Oltin', price: 0, color: '#d4a93a', exclusive: 'boss_all' },
+  { kind: 'paint', id: 'tungi', name: "Tungi ko'k", price: 0, color: '#1e3a8a', exclusive: 'streak_7' },
+];
+
+export const EXCLUSIVE_MODS: readonly Mod[] = [
+  { kind: 'mod', id: 'bayroq', name: "O'zbekiston bayroqchasi", price: 0, desc: 'Antennada hilpiraydi. 1–10-bosqichlarni o‘tganlar uchun.', exclusive: 'chapter1' },
+  { kind: 'mod', id: 'qovun', name: 'Tomda qovunlar', price: 0, desc: "Mirzacho'l qovunlari. Burilishda ehtiyot bo'ling!", exclusive: 'endless_50' },
+];
+
 export const STARTER_LOADOUT = { model: 'matiz', paint: 'sariq', mods: [] as string[] } as const;
 export const STARTER_ITEMS: readonly string[] = ['matiz', 'oq', 'sariq'];
 
+/** Purchasable catalog — mirrored 1:1 by supabase shop_catalog (tested). */
 export const ALL_ITEMS: readonly GarageItem[] = [...MODELS, ...PAINTS, ...MODS];
+export const EXCLUSIVE_ITEMS: readonly GarageItem[] = [...EXCLUSIVE_PAINTS, ...EXCLUSIVE_MODS];
+const EVERY_ITEM: readonly GarageItem[] = [...ALL_ITEMS, ...EXCLUSIVE_ITEMS];
 
 export function findItem(id: string): GarageItem | undefined {
-  return ALL_ITEMS.find((i) => i.id === id);
+  return EVERY_ITEM.find((i) => i.id === id);
+}
+
+export function isExclusive(item: GarageItem): boolean {
+  return item.kind !== 'model' && !!item.exclusive;
 }
 
 export function findModel(id: string): CarModel {
@@ -103,5 +124,11 @@ export function findModel(id: string): CarModel {
 }
 
 export function findPaint(id: string): Paint {
-  return PAINTS.find((p) => p.id === id) ?? PAINTS[0];
+  return PAINTS.find((p) => p.id === id) ?? EXCLUSIVE_PAINTS.find((p) => p.id === id) ?? PAINTS[0];
+}
+
+/** Exclusive item ids granted by the given unlocked achievements. */
+export function exclusiveRewards(unlocked: Iterable<string>): string[] {
+  const set = new Set(unlocked);
+  return EXCLUSIVE_ITEMS.filter((i) => i.kind !== 'model' && i.exclusive && set.has(i.exclusive)).map((i) => i.id);
 }

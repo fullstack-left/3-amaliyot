@@ -9,6 +9,7 @@
  *      of both sides.
  * Rejected runs (4xx) are dropped; network failures keep them for next time.
  */
+import { dayKeyFromIndex, dayIndexOfId, isDailyId } from '../../content/daily.js';
 import { SupaError } from './supabase.js';
 export async function syncNow(client, save) {
     const session = await client.ensureSession();
@@ -34,13 +35,19 @@ export async function syncNow(client, save) {
     const rows = await client.select('level_progress', 'select=level_id,stars,best_time_ms');
     const items = await client.select('garage_items', 'select=item_id');
     const progress = { ...save.progress };
-    for (const r of rows) {
-        const k = String(r.level_id);
-        const local = progress[k];
-        progress[k] = {
+    const daily = { ...save.daily.results };
+    const merge = (map, k, r) => {
+        const local = map[k];
+        map[k] = {
             stars: Math.max(local?.stars ?? 0, r.stars),
             bestMs: local ? Math.min(local.bestMs, r.best_time_ms) : r.best_time_ms,
         };
+    };
+    for (const r of rows) {
+        if (isDailyId(r.level_id))
+            merge(daily, dayKeyFromIndex(dayIndexOfId(r.level_id)), r);
+        else if (r.level_id >= 1 && r.level_id <= 1000)
+            merge(progress, String(r.level_id), r);
     }
     return {
         pushed,
@@ -48,6 +55,7 @@ export async function syncNow(client, save) {
         kept,
         coins: profile ? profile.coins : null,
         progress,
+        daily,
         owned: items.map((i) => i.item_id),
         userId: session.userId,
     };
@@ -60,5 +68,15 @@ export async function purchaseRemote(client, itemId) {
 export async function saveLoadoutRemote(client, loadout) {
     await client.ensureSession();
     await client.rpc('set_loadout', { p_model: loadout.model, p_paint: loadout.paint, p_mods: loadout.mods });
+}
+/** Public display name for leaderboards (profiles.display_name, RLS: own row only). */
+export async function setDisplayNameRemote(client, name) {
+    const session = await client.ensureSession();
+    await client.update('profiles', `id=eq.${encodeURIComponent(session.userId)}`, { display_name: name });
+}
+/** Top results for a level (campaign or daily id); `is_me` marks the caller's row. */
+export async function fetchLeaderboard(client, levelId, limit = 10) {
+    await client.ensureSession();
+    return client.rpc('leaderboard', { p_level: levelId, p_limit: limit });
 }
 //# sourceMappingURL=sync.js.map

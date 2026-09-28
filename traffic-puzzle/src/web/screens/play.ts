@@ -3,7 +3,7 @@
  * HUD, penalty feedback (whistle + red flash + heart loss), hints, modals.
  */
 
-import { BAND_INFO, getLevelDef, LEVEL_COUNT } from '../../content/campaign.js';
+import { BAND_INFO, LEVEL_COUNT } from '../../content/campaign.js';
 import { MODELS } from '../../content/garage.js';
 import { REASON_TEXT } from '../../content/rulesText.js';
 import { computePar, legalMoves } from '../../core/bot.js';
@@ -14,7 +14,7 @@ import { loadLevel, type Level } from '../../core/level.js';
 import { makeReplay } from '../../core/replay.js';
 import type { Reward } from '../../core/scoring.js';
 import type { Gesture, LevelDef } from '../../core/types.js';
-import type { App } from '../app.js';
+import { resolveTarget, type App } from '../app.js';
 import { clear, fmtTime, h } from '../dom.js';
 import { icon, REASON_ICON, starRow, type IconName } from '../icons.js';
 import { Renderer } from '../render/renderer.js';
@@ -29,10 +29,11 @@ const GESTURE_UZ: Record<Gesture, string> = {
 
 export function mountPlay(root: HTMLElement, app: App): () => void {
   const { store, sfx } = app;
-  const st0 = store.getState();
-  const custom = !!st0.custom;
-  const def: LevelDef | undefined = st0.custom ?? getLevelDef(st0.levelId);
-  if (!def) {
+  const target = store.getState().target;
+  const resolved = target ? resolveTarget(target) : null;
+  const custom = target?.kind === 'custom';
+  const def: LevelDef | undefined = resolved?.def;
+  if (!def || !target) {
     store.getState().go('levels');
     return () => undefined;
   }
@@ -297,7 +298,7 @@ export function mountPlay(root: HTMLElement, app: App): () => void {
 
   function finish(result: LevelResult) {
     const replay = result.completed ? makeReplay(engine) : null;
-    const reward: Reward = store.getState().finishLevel(def!, result, replay, custom);
+    const reward: Reward = store.getState().finishRun(target!, def!, result, replay, { hints: 0 }).reward;
     if (result.completed) sfx.win();
     else sfx.lose();
     const next = !custom && def!.id < LEVEL_COUNT ? def!.id + 1 : null;

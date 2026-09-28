@@ -17,6 +17,8 @@ const SCREENS = {
     settings: mountSettings,
     rules: mountRules,
     editor: mountEditor,
+    stats: mountRules,
+    achievements: mountRules,
 };
 function boot() {
     const root = document.getElementById('app');

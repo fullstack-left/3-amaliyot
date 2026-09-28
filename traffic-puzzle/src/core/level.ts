@@ -19,7 +19,9 @@ import { msToTicks, Q_GAP } from './kinematics.js';
 import type { Layout } from './rules.js';
 import { buildSignalPlan } from './signals.js';
 import type {
+  Ambience,
   Band,
+  CoachStep,
   ControllerDef,
   Dir,
   DirLetter,
@@ -36,8 +38,15 @@ export const BANDS: readonly Band[] = ['base', 'complex', 'roundabout', 'boss'];
 export const JUNCTION_TYPES: readonly JunctionType[] = ['cross', 't', 'roundabout'];
 export const SIGN_TYPES: readonly SignType[] = ['none', 'main', 'yield', 'stop'];
 export const GESTURES = ['arms_side', 'right_forward', 'arm_up'] as const;
+export const AMBIENCES: readonly Ambience[] = ['day', 'evening', 'night', 'rain'];
 export const MAX_VEHICLES = 80;
 export const MAX_QUEUE = 7;
+export const MAX_COACH_STEPS = 12;
+
+export interface LevelLimits {
+  /** Raise the vehicle cap for trusted generated content (endless mode). Never for user input. */
+  readonly maxVehicles?: number;
+}
 
 export interface SpawnPlan {
   readonly id: string;
@@ -60,6 +69,8 @@ export interface Level {
   readonly lives: number;
   readonly parMs: number | undefined;
   readonly spawns: readonly SpawnPlan[];
+  readonly ambience: Ambience;
+  readonly coach: readonly CoachStep[];
 }
 
 export interface ValidationResult {
@@ -93,7 +104,7 @@ function checkSpawn(x: unknown, where: string, errors: string[]): x is SpawnDef 
   return ok;
 }
 
-export function validateLevel(input: unknown): ValidationResult {
+export function validateLevel(input: unknown, limits: LevelLimits = {}): ValidationResult {
   const errors: string[] = [];
   const warnings: string[] = [];
   if (!isObj(input)) return { ok: false, errors: ["Level JSON obyekt bo'lishi kerak"], warnings };
@@ -108,6 +119,8 @@ export function validateLevel(input: unknown): ValidationResult {
     errors.push('lives: 1..9');
   }
   if (d.parMs !== undefined && (!isNum(d.parMs) || d.parMs <= 0)) errors.push('parMs: musbat son');
+  if (d.ambience !== undefined && !AMBIENCES.includes(d.ambience as Ambience)) errors.push(`ambience: ${AMBIENCES.join(' | ')}`);
+  const vehicleIds = new Set<string>();
 
   const armsSet = new Set<DirLetter>();
   let total = 0;
@@ -149,6 +162,8 @@ export function validateLevel(input: unknown): ValidationResult {
       });
       if (stopU + laneLen > DESPAWN_U - 0.3) errors.push(`${w}.queue: navbat yo'lga sig'maydi (juda uzun)`);
       const arrivals = a.arrivals;
+      const count = queue.length + (Array.isArray(arrivals) ? arrivals.length : 0);
+      for (let k = 0; k < count; k++) vehicleIds.add(`${dir}${k}`);
       if (arrivals !== undefined) {
         if (!Array.isArray(arrivals)) errors.push(`${w}.arrivals: massiv bo'lishi kerak`);
         else
@@ -181,7 +196,23 @@ export function validateLevel(input: unknown): ValidationResult {
     }
   }
   if (total < 1) errors.push("Kamida bitta mashina bo'lishi kerak");
-  if (total > MAX_VEHICLES) errors.push(`Ko'pi bilan ${MAX_VEHICLES} ta mashina`);
+  const maxVehicles = limits.maxVehicles ?? MAX_VEHICLES;
+  if (total > maxVehicles) errors.push(`Ko'pi bilan ${maxVehicles} ta mashina`);
+
+  // coach (interactive tutorial)
+  if (d.coach !== undefined) {
+    if (!Array.isArray(d.coach) || d.coach.length === 0 || d.coach.length > MAX_COACH_STEPS) {
+      errors.push(`coach: 1..${MAX_COACH_STEPS} ta qadamdan iborat massiv`);
+    } else {
+      d.coach.forEach((c: unknown, i: number) => {
+        if (!isObj(c) || typeof c.vehicle !== 'string' || typeof c.text !== 'string' || !c.text.trim()) {
+          errors.push(`coach[${i}]: { vehicle: "E0", text: "..." }`);
+        } else if (!vehicleIds.has(c.vehicle)) {
+          errors.push(`coach[${i}].vehicle: "${c.vehicle}" mashinasi yo'q`);
+        }
+      });
+    }
+  }
 
   // signals
   if (d.signals !== undefined) {
@@ -255,8 +286,8 @@ export function validateLevel(input: unknown): ValidationResult {
   return { ok: errors.length === 0, errors, warnings };
 }
 
-export function loadLevel(def: LevelDef): Level {
-  const v = validateLevel(def);
+export function loadLevel(def: LevelDef, limits: LevelLimits = {}): Level {
+  const v = validateLevel(def, limits);
   if (!v.ok) throw new Error(`Level ${String(def.id)} noto'g'ri:\n- ${v.errors.join('\n- ')}`);
 
   const armEnabled = [false, false, false, false];
@@ -320,5 +351,7 @@ export function loadLevel(def: LevelDef): Level {
     lives: def.lives ?? 3,
     parMs: def.parMs,
     spawns,
+    ambience: def.ambience ?? 'day',
+    coach: def.coach ?? [],
   };
 }

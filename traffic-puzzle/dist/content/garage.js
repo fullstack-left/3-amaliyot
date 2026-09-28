@@ -34,16 +34,36 @@ export const MODS = [
     { kind: 'mod', id: 'shashka', name: 'Taksi shashkasi', price: 50, desc: 'Tomda "TAXI" belgisi.' },
     { kind: 'mod', id: 'gilam', name: 'Tomda gilam', price: 80, desc: 'Bozordan qaytyapmiz — tomda o‘ralgan gilam.' },
 ];
+/** Achievement rewards — cannot be bought (not in the server shop catalog). */
+export const EXCLUSIVE_PAINTS = [
+    { kind: 'paint', id: 'oltin', name: 'Oltin', price: 0, color: '#d4a93a', exclusive: 'boss_all' },
+    { kind: 'paint', id: 'tungi', name: "Tungi ko'k", price: 0, color: '#1e3a8a', exclusive: 'streak_7' },
+];
+export const EXCLUSIVE_MODS = [
+    { kind: 'mod', id: 'bayroq', name: "O'zbekiston bayroqchasi", price: 0, desc: 'Antennada hilpiraydi. 1–10-bosqichlarni o‘tganlar uchun.', exclusive: 'chapter1' },
+    { kind: 'mod', id: 'qovun', name: 'Tomda qovunlar', price: 0, desc: "Mirzacho'l qovunlari. Burilishda ehtiyot bo'ling!", exclusive: 'endless_50' },
+];
 export const STARTER_LOADOUT = { model: 'matiz', paint: 'sariq', mods: [] };
 export const STARTER_ITEMS = ['matiz', 'oq', 'sariq'];
+/** Purchasable catalog — mirrored 1:1 by supabase shop_catalog (tested). */
 export const ALL_ITEMS = [...MODELS, ...PAINTS, ...MODS];
+export const EXCLUSIVE_ITEMS = [...EXCLUSIVE_PAINTS, ...EXCLUSIVE_MODS];
+const EVERY_ITEM = [...ALL_ITEMS, ...EXCLUSIVE_ITEMS];
 export function findItem(id) {
-    return ALL_ITEMS.find((i) => i.id === id);
+    return EVERY_ITEM.find((i) => i.id === id);
+}
+export function isExclusive(item) {
+    return item.kind !== 'model' && !!item.exclusive;
 }
 export function findModel(id) {
     return MODELS.find((m) => m.id === id) ?? MODELS[0];
 }
 export function findPaint(id) {
-    return PAINTS.find((p) => p.id === id) ?? PAINTS[0];
+    return PAINTS.find((p) => p.id === id) ?? EXCLUSIVE_PAINTS.find((p) => p.id === id) ?? PAINTS[0];
+}
+/** Exclusive item ids granted by the given unlocked achievements. */
+export function exclusiveRewards(unlocked) {
+    const set = new Set(unlocked);
+    return EXCLUSIVE_ITEMS.filter((i) => i.kind !== 'model' && i.exclusive && set.has(i.exclusive)).map((i) => i.id);
 }
 //# sourceMappingURL=garage.js.map
