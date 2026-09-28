@@ -223,13 +223,27 @@ Ustuvorlik tartibi (birinchi rad etgan g'olib):
 
 ## 11. v3 bajarish rejasi
 
-- [ ] 13. Reja (shu bo'lim)
-- [ ] 14. Core: `ambience`, `coach`, `maxVehicles`, tirbandlik (overflow), `endReason`, `waitSince` + testlar
-- [ ] 15. Kontent: kunlik va cheksiz generatorlar, yutuqlar, mashq xaritasi, eksklyuziv kosmetika, kampaniyaga atmosfera + coach + testlar
-- [ ] 16. Saqlash v2 + app store: rejimlar, statistika, yutuqlar, streak, marshrutlash + testlar
-- [ ] 17. Render v3: kamera, sahna (binolar, detallar, atmosfera), fonarlar, faralar, yomg'ir, zarrachalar, niyat belgilari, izoh chiziqlari, silkinish
-- [ ] 18. Ekranlar: play v3, menyu v3, bosqichlar, statistika, yutuqlar, cheksiz, garaj, sozlamalar
-- [ ] 19. Muharrir v2 + havola orqali ulashish
-- [ ] 20. Shrift, ikonkalar, PWA (manifest, SW, ikonkalar), marshrutlash
-- [ ] 21. Supabase v3 (migratsiya, edge function, reyting UI) + testlar
-- [ ] 22. e2e + perf + skrinshotlar, hujjatlar, CI, commit, push, PR
+- [x] 13. Reja (shu bo'lim)
+- [x] 14. Core: `ambience`, `coach`, `maxVehicles`, tirbandlik (overflow), `endReason`, `waitSince` + testlar
+- [x] 15. Kontent: kunlik va cheksiz generatorlar, yutuqlar, mashq xaritasi, eksklyuziv kosmetika, kampaniyaga atmosfera + coach + testlar
+- [x] 16. Saqlash v2 + app store: rejimlar, statistika, yutuqlar, streak, marshrutlash + testlar
+- [x] 17. Render v3: kamera, sahna (binolar, detallar, atmosfera), fonarlar, faralar, yomg'ir, zarrachalar, niyat belgilari, izoh chiziqlari, silkinish
+- [x] 18. Ekranlar: play v3, menyu v3, bosqichlar, statistika, yutuqlar, cheksiz, garaj, sozlamalar
+- [x] 19. Muharrir v2 + havola orqali ulashish
+- [x] 20. Shrift, ikonkalar, PWA (manifest, SW, ikonkalar), marshrutlash
+- [x] 21. Supabase v3 (migratsiya, edge function, reyting UI) + testlar
+- [x] 22. e2e + perf + skrinshotlar, hujjatlar, CI, commit, push, PR
+
+## 12. v3 natijalari (bajarilish holati)
+
+| Talab | Holat | Qanday tekshirilgan | Rejadan farqi |
+|---|---|---|---|
+| R13 aniq kamera | ✅ | `tests/scene.test.mjs`: 390×844 da 31.4 px/birlik (v2: 21); ekrandan tashqaridagi navbat "+N" bilan | — |
+| R14 tushunarlilik | ✅ | yordamchi qadamlari har biri qonuniy yurish (`modes.test.mjs`); e2e: qo'l ko'rinadi va keyingi qadamga o'tadi, "Nega?" izohi | — |
+| R15 atmosfera, shahar, effektlar | ✅ | `scene.test.mjs`: statik shahar hech qachon orqadagi mashinani yopmaydi (11+ chorraha turi); perf: tun/yomg'irda 24 mashina 60 fps, render 0.72–0.84 ms | fon: panel uylar, masjid, do'konlar, kiosk, bekat, bog' (favvora, hovuz, o'yin maydonchasi), avtoturargoh, T-yopilishlar (maktab, choyxona) |
+| R16 kunlik + cheksiz | ✅ | 14 ketma-ket kun validatsiya + avtopilot jazosiz; cheksizda hech narsa bosilmasa ham, mohir bot bilan ham tirbandlik bilan tugaydi | tirbandlik chegarasi: bir yo'lda **7 tadan ko'p** (reja matnida 8); oqim tezligi shu chegara bilan kalibrlangan (bot 92–115 mashinadan keyin tiqiladi) |
+| R17 yutuqlar + statistika | ✅ | toza funksiyalar testlangan; e2e: "Birinchi chorraha" ochiladi, Statistika va Yutuqlar ekranlari | **20 ta** yutuq (reja: 18); 4 ta eksklyuziv mukofot (rejadagi 3 tasi + tomda qovunlar) |
+| R18 boshqaruv, UX, PWA | ✅ | e2e: orqaga tugmasi, `#/play/5`, `#/custom/…`, klaviatura bilan 3 yulduz, service worker, **offlayn qayta yuklash va o'ynash** | — |
+| R19 muharrir v2 | ✅ | `editor.test.mjs`: 50 bosqichning har biri muharrir orqali o'zgarishsiz qaytadi; havola kodi encode → decode aynan bir xil; e2e | qo'shimcha: kampaniyadan namuna, avtopilotning jonli ko'rsatuvi |
+| R20 Supabase v3 | ✅ / ⚠ | mock testlar: kunlik oynasi, serverda qayta yaratilgan bosqichga qarshi tekshiruv, migratsiya 2, reyting/ism; **jonli Supabase'da ishga tushirilmagan** | oyna **UTC bugun −7 … +1** (reja: ±1), chunki o'yin oxirgi 6 kunni arxiv sifatida ochadi; `my_rank` qo'shildi; sinxron poygasidagi xato tuzatildi |
+| R21 sifat | ✅ | **100 test** yashil (CI har push'da), e2e 22 tekshiruv, konsolda 0 xato, hujjatlar yangilandi | — |

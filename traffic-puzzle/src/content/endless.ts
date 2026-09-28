@@ -8,7 +8,7 @@
  *
  * Tuning (npm test prints it): the gap shrinks from ~3 s to its minimum within
  * ~85 arrivals, above the junction's capacity — even the 0.2 s-reaction bot
- * gridlocks after ~70–115 vehicles (2.5–3 min), so every run ends.
+ * gridlocks after ~90–115 vehicles (2.5–3 min), so every run ends.
  */
 
 import { DIR_LETTERS, dirFromLetter, exitOf } from '../core/dir.js';

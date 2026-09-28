@@ -146,6 +146,12 @@ try {
   await shot(p2, '09-night');
   await openLevel(p2, 16, 2500);
   await shot(p2, '09-rain');
+  const perf = await newPage({ width: 1280, height: 760 }, { ...unlocked, settings: { ...unlocked.settings, perf: true } });
+  await openLevel(perf, 50, 3500);
+  const perfStats = await perf.evaluate(() => ({ ...window.__chorraha.renderer.stats }));
+  log('final boss render', JSON.stringify({ drawMs: perfStats.drawMs.toFixed(2), drawn: perfStats.drawn, fps: perfStats.fps.toFixed(0) }));
+  check(perfStats.drawMs < 4, 'perf: final boss frame renders in < 4 ms (headless, software canvas)');
+  await shot(perf, '12-final-boss-perf');
 
   // --- routing: deep links and shared custom levels -----------------------------------
   await p2.goto(`${BASE}#/play/5`);

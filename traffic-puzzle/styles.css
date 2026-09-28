@@ -461,6 +461,10 @@ input.num { width: 72px; }
 .hero-toggle .ic { width: 16px; height: 16px; }
 .pose-list .veh-row select { flex: 0 1 auto; }
 .editor-actions { margin-top: 4px; }
+.editor .arm-grid { grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); }
+.editor .veh-row select { flex: 1 1 auto; min-width: 0; }
+.editor .veh-row .btn.small { padding: 5px 7px; }
+.editor .veh-row .btn.small .ic { margin-right: 0; }
 @media (max-width: 900px) {
   .editor-layout { grid-template-columns: 1fr; }
   .editor-preview { position: static; order: -1; }

@@ -71,4 +71,21 @@ Regulirovshik **svetofor va belgilardan ustun**. Uning ko'kragi qaragan tomon ye
 - ★ bosqich o'tildi · ★ xatosiz · ★ tez (par vaqtidan tez; par = avtopilot vaqti × 1.25 + 2.5 s).
 - Tangalar: har bir mashina (hamda o'z mashinangiz uchun +5), birinchi o'tishda bosqich bonusi, har bir **yangi** yulduz uchun +10. Yutqazilgan urinish tanga bermaydi.
 
+## 8. O'yin qoidani qanday tushuntiradi
+
+| Yordam | Qachon | Nima ko'rsatadi |
+|---|---|---|
+| **Yo'nalish belgisi** | doim, oldingi mashinalar tepasida | ↑ to'g'riga, ↰ chapga, ↱ o'ngga; "Klaviatura raqamlari" yoqilsa — 1–4 tugmasi |
+| **"Nega?" izohi** | sichqoncha mashina ustida / telefonda 0.45 s uzoq bosish (sozlamalar: "Oldindan ko'rsatish") | Yashil — o'tishi mumkin; qizil — qaysi qoida taqiqlaydi va kimga yo'l berish kerak (sariq halqa + uzuq chiziq). Bu aynan jarimani hisoblaydigan `canVehicleMove()` natijasi |
+| **Yordamchi qo'l** | 1, 2, 3, 5, 11, 21, 31-bosqichlar, birinchi o'tishgacha | Qaysi mashinani bosish kerakligini ko'rsatadi va nega shunday ekanini yozadi; mashina o'tgach keyingi qadam |
+| **Maslahat (`H`)** | istalgan payt | Hozir qonuniy o'ta oladigan mashinani yashil halqa bilan belgilaydi (statistikada hisoblanadi) |
+| **Sabr pufakchasi** | mashina 8 s kutsa "…", 14 s kutsa "!" va signal | Faqat bezak: qoidalarga ta'sir qilmaydi, lekin tirbandlikni sezdiradi |
+| **Mashq qilish** | natija oynasi (yutqazganda) va Statistika | Eng ko'p buzilgan qoida → uni o'rgatuvchi bosqich: o'ng qo'l — 1, chapga burilish — 3, to'qnashuv xavfi — 4, maxsus transport — 5, regulirovshik — 10, asosiy yo'l — 11, svetofor — 21, aylanma — 31 |
+
+## 9. Rejimlar va atmosfera
+
+- **Kunlik chorraha** — qoidalar kampaniyadagi bilan bir xil; bosqich sanadan yaratiladi (dushanba — teng yo'llar, seshanba — asosiy yo'l, chorshanba — svetofor, payshanba — aylanma, juma — T-chorraha, shanba — regulirovshik, yakshanba — sirenalar kuni). Ketma-ketlik faqat **bugungi** bosqich uchun hisoblanadi.
+- **Cheksiz tirbandlik** — mashinalar tobora tez keladi. Bir yo'lda **7 tadan ko'p** mashina to'plansa (ya'ni 8-chisi kelsa) yoki 3 marta qoida buzilsa — o'yin tugaydi. Natija — o'tkazilgan mashinalar soni; tanga berilmaydi.
+- **Kechqurun, tun, yomg'ir** — faqat ko'rinish: qoidalar o'zgarmaydi, lekin mashinalarni faralar va stop-chiroqlar bo'yicha kuzatishga to'g'ri keladi.
+
 > Bu — o'quv maqsadidagi soddalashtirilgan model: har yo'nalishda bitta bo'lak, piyodalar, tramvay va qayrilib olish yo'q. Rasmiy YHQ matni o'rnini bosmaydi.

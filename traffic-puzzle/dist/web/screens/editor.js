@@ -25,6 +25,15 @@ const TURN_UZ = { straight: "to'g'riga", left: 'chapga', right: "o'ngga" };
 const SIGN_UZ = { none: 'belgisiz', main: "asosiy yo'l", yield: "yo'l bering", stop: 'STOP' };
 const GESTURE_UZ = { arms_side: "qo'llar yonga", right_forward: "o'ng qo'l oldinga", arm_up: "qo'l tepada" };
 const MAX_ARRIVALS = 12;
+const KIND_SHORT = {
+    car: 'Yengil',
+    taxi: 'Taksi',
+    police: 'YPX',
+    bus: 'Avtobus',
+    truck: 'Yuk mashinasi',
+    ambulance: 'Tez yordam',
+    fire: "O't o'chirish",
+};
 const MAX_POSES = 16;
 function loadDraft() {
     try {
@@ -84,7 +93,7 @@ export function mountEditor(root, app) {
     });
     const armEnabled = (d) => activeArms(state).includes(d);
     const turnsFrom = (d) => ['straight', 'left', 'right'].filter((t) => armEnabled(DIR_LETTERS[exitOf(dirFromLetter(d), t)]));
-    const kindOptions = VEHICLE_KINDS.map((kd) => [kd, VEHICLE_SPECS[kd].nameUz]);
+    const kindOptions = VEHICLE_KINDS.map((kd) => [kd, KIND_SHORT[kd] ?? VEHICLE_SPECS[kd].nameUz]);
     function vehicleRow(d, list, k, arrival) {
         const q = list[k];
         const turns = turnsFrom(d);

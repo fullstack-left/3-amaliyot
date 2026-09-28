@@ -44,6 +44,15 @@ const TURN_UZ: Record<Turn, string> = { straight: "to'g'riga", left: 'chapga', r
 const SIGN_UZ: Record<SignType, string> = { none: 'belgisiz', main: "asosiy yo'l", yield: "yo'l bering", stop: 'STOP' };
 const GESTURE_UZ: Record<Gesture, string> = { arms_side: "qo'llar yonga", right_forward: "o'ng qo'l oldinga", arm_up: "qo'l tepada" };
 const MAX_ARRIVALS = 12;
+const KIND_SHORT: Record<VehicleKind, string> = {
+  car: 'Yengil',
+  taxi: 'Taksi',
+  police: 'YPX',
+  bus: 'Avtobus',
+  truck: 'Yuk mashinasi',
+  ambulance: 'Tez yordam',
+  fire: "O't o'chirish",
+};
 const MAX_POSES = 16;
 
 function loadDraft(): EditorState {
@@ -108,7 +117,7 @@ export function mountEditor(root: HTMLElement, app: App): () => void {
 
   const armEnabled = (d: DirLetter): boolean => activeArms(state).includes(d);
   const turnsFrom = (d: DirLetter): Turn[] => (['straight', 'left', 'right'] as Turn[]).filter((t) => armEnabled(DIR_LETTERS[exitOf(dirFromLetter(d), t)]));
-  const kindOptions = VEHICLE_KINDS.map((kd) => [kd, VEHICLE_SPECS[kd].nameUz] as [VehicleKind, string]);
+  const kindOptions = VEHICLE_KINDS.map((kd) => [kd, KIND_SHORT[kd] ?? VEHICLE_SPECS[kd].nameUz] as [VehicleKind, string]);
 
   function vehicleRow(d: DirLetter, list: (SpawnDef | ArrivalDef)[], k: number, arrival: boolean): HTMLElement {
     const q = list[k];

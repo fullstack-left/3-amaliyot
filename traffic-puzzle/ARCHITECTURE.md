@@ -1,8 +1,8 @@
-# Chorraha Boshqaruvi — Architecture (v2)
+# Chorraha Boshqaruvi — Architecture (v3)
 
 A deterministic traffic-rules puzzle: an isometric intersection, vehicles queued on every arm, and the player taps them one at a time. Legal taps move the vehicle through the junction. Illegal taps cost a life, trigger the traffic-police whistle and flash the involved cars red.
 
-This document covers the four deliverables from the brief: **state management**, the **validation algorithm**, the **level data structure** and **rendering performance**. It also documents the geometry, determinism and anti-cheat design these depend on.
+This document covers the four deliverables from the brief: **state management**, the **validation algorithm**, the **level data structure** and **rendering performance**. It also documents the geometry, determinism and anti-cheat design these depend on. Section 11 describes what v3 added on top: the content-fit camera, the occlusion-safe city, ambience lighting, the daily/endless modes, achievements, the editor model, routing, the offline PWA and the second Supabase migration.
 
 ---
 
@@ -19,8 +19,8 @@ This document covers the four deliverables from the brief: **state management**,
 ## 2. Module map
 
 ```
-src/core/            pure, framework-free (≈2.2k lines)
-  types.ts           domain + level JSON types
+src/core/            pure, framework-free (≈2.3k lines)
+  types.ts           domain + level JSON types (ambience, coach steps, end reasons)
   dir.ts             direction algebra, right-hand lane geometry
   path.ts            PathBuilder → uniform arc-length Path (O(1) sample)
   junction.ts        cross / cross_ctrl / roundabout paths + conflict zones (cached)
@@ -28,19 +28,31 @@ src/core/            pure, framework-free (≈2.2k lines)
   signals.ts         traffic-light plans (green, green-flash, amber, red+amber, flashing)
   controller.ts      traffic-controller gestures and body sides
   rules.ts           ★ canVehicleMove — priority ladder, yield graph, Tarjan SCC, space-time
-  level.ts           validateLevel (Uzbek messages) + loadLevel
-  engine.ts          GameEngine: tap(), step(), queues, arrivals, penalties, events
+  level.ts           validateLevel (Uzbek messages, limits) + loadLevel
+  engine.ts          GameEngine: tap(), step(), queues, arrivals, penalties, gridlock, counters, events
   scoring.ts         stars, coin rewards (shared with the server)
   replay.ts          makeReplay / verifyReplay (anti-cheat)
   bot.ts             greedy legal autoplay: solvability proof, par time, hints
-src/content/         campaign data, generator, garage catalog, Uzbek rule texts
+src/content/         data + pure game content logic
+  campaign*.ts       the frozen 50-level campaign, chapters, bands
+  generator.ts       seeded level generator (campaign, daily)
+  daily.ts           daily challenge: calendar maths, weekday themes, deterministic level per day, server window
+  endless.ts         endless streams (3 variants) that always end in gridlock
+  achievements.ts    20 achievements as pure functions of the save
+  practice.ts        violation analytics → "practice this rule" level
+  garage.ts          models, paints, mods + achievement-only exclusives
 src/web/             browser client (canvas renderer + DOM UI, no framework)
-  render/            camera, static scene cache, vehicles + sprite LRU, props, compositor
-  screens/           menu, levels, play, garage, settings, rules, editor
-  net/               Supabase REST client + offline-first sync
-supabase/            SQL migration (RLS, RPC) + submit-run edge function
-scripts/             campaign freezer, edge bundler, static server, e2e/perf browser checks
-tests/               63 node:test cases (geometry, every rule, engine, campaign, web, edge)
+  render/            camera, city scene cache, ambience grade, lights/effects, vehicles + sprite LRU, props, compositor
+  screens/           menu, levels, play, garage, settings, rules, editor, stats, achievements
+  app.ts store.ts    Zustand-shaped store: targets (campaign/daily/endless/custom), runs, achievements, cloud
+  save.ts            versioned local save (v2) with migration
+  editor-model.ts    pure editor state ⇄ LevelDef (lossless), draft migration, import parsing
+  router.ts share.ts hash routes ⇄ screens; level ⇄ "L1." share code
+  pwa.ts fx.ts       service-worker registration + install prompt; confetti, count-up, clipboard
+  net/               Supabase REST client + offline-first sync, leaderboard
+supabase/            SQL migrations (RLS, RPC, v3 daily ids + leaderboard) + submit-run edge function
+scripts/             campaign freezer, edge bundler, service-worker + icon generators, static server, e2e/perf
+tests/               100 node:test cases (geometry, every rule, engine, campaign, modes, render geometry, editor, web, edge)
 ```
 
 There are no runtime dependencies. The only dev dependency is TypeScript.
@@ -169,10 +181,11 @@ pointer → Renderer.pick() → engine.tap(id) → canVehicleMove()
                                    ├─ violation → 'penalty' → whistle, red flash, heart −1, culprit rings
                                    └─ wait      → 'blocked' → horn + hint toast (no penalty)
 rAF → accumulator → engine.step() ×N → 'cleared' (+coins popup), 'arrive', 'won' / 'lost'
-'won' → store.finishLevel() → computeReward() → save (debounced) → pending replay → cloudSync()
+'won'/'lost' → store.finishRun(target, def, result, replay, {hints}) → reward (campaign/daily) | endless record
+            → stats, history, achievements → save (debounced) → pending replay → cloudSync() → leaderboard
 ```
 
-`GameEvent`s are the only coupling between the simulation and presentation. Audio, haptics, analytics and tutorials all subscribe to them.
+`GameEvent`s are the only coupling between the simulation and presentation. Audio, haptics, the renderer's effects (exhaust, sparks, shake), the coach and the HUD all subscribe to them.
 
 ### 6.3 Flutter / Bloc mapping
 
@@ -213,23 +226,29 @@ Levels are plain JSON (`LevelDef` in `src/core/types.ts`). There is a JSON Schem
 
 | Technique | Where |
 |---|---|
-| Static scene (ground, roads, markings, island, background buildings) rendered once to an offscreen canvas per level/resize, then one `drawImage` per frame | `render/scene.ts` |
-| Vehicles are oriented 3D boxes with back-face culling (`n.x + n.y > 0`). Each (look, heading bucket of 64) is pre-rendered into a **sprite**, kept in an **LRU cache** (360 entries) and invalidated on zoom/DPR change | `render/vehicles.ts` |
-| Painter's algorithm: vehicles and tall props (poles, trees, controller) sorted by `x + y` each frame, reusing a pooled array | `render/renderer.ts` |
-| Fixed 60 Hz simulation with an accumulator, rendering interpolated between ticks (crossing positions analytically from `distAt`) | `screens/play.ts` |
+| Static scene (ground, roads, markings, island, the whole city, lamp pools, lit windows) rendered once to an offscreen canvas per level/resize, then one `drawImage` per frame | `render/scene.ts` |
+| Ambience is a **colour grade applied at draw time** (`g(color)`, cached per grade): no full-screen multiply/composite pass per frame; light sources use raw colours | `render/color.ts` |
+| Vehicles are oriented 3D boxes with back-face culling (`n.x + n.y > 0`). Each (grade, look, heading bucket of 64) is pre-rendered into a **sprite**, kept in an **LRU cache** (360 entries) and invalidated on zoom/DPR change | `render/vehicles.ts` |
+| Lights are cached sprites drawn additively: headlight cones per heading bucket (only for front and moving cars — a queued car's beam lies under the car ahead), glow discs for brake lights, lamps and sirens | `render/effects.ts` |
+| Particles are pooled (≤ 220); rain is one stroked path per frame | `render/effects.ts` |
+| Painter's algorithm: vehicles and tall props (poles, lamps, trees near traffic, monument, controller) sorted by `x + y` each frame, reusing a pooled array | `render/renderer.ts` |
+| Fixed 60 Hz simulation with an accumulator (1× / 2×), rendering interpolated between ticks (crossing positions analytically from `distAt`) | `screens/play.ts` |
 | DPR-aware canvas (capped at 2×), paused when the tab is hidden, no per-vehicle DOM nodes | |
 | Conflict zones precomputed per geometry; the yield graph has ≤ 4 nodes, so a tap costs microseconds | `core/junction.ts`, `core/rules.ts` |
 
-**Measured** with headless Chromium (software rendering, 1280×760), 24 vehicles visible, 6 s per sample (`npm run perf`). Ranges come from two separate runs:
+**Measured** with headless Chromium (software rendering, 1280×760), 24 vehicles visible, 6 s per sample (`npm run perf`, which prints this table):
 
-| Sprite cache | DPR | Render cost / frame | Frame time p50 / p99 | FPS |
-|---|---|---|---|---|
-| on | 1 | **0.27–0.39 ms** | 16.7 / 16.8 ms | 60 |
-| off (vector) | 1 | 0.66–0.89 ms | 16.7 / 16.8 ms | 60 |
-| on | 2 | **0.36–0.39 ms** | 16.7 / 16.8 ms | 60 |
-| off (vector) | 2 | 0.72–0.78 ms | 16.7 / 16.8 ms | 60 |
+| Ambience | Sprite cache | DPR | Render cost / frame | Frame p99 | FPS |
+|---|---|---|---|---|---|
+| day | on | 1 | **0.41 ms** | 16.8 ms | 60 |
+| day | off (vector) | 1 | 0.96 ms | 16.8 ms | 60 |
+| day | on | 2 | **0.55 ms** | 16.8 ms | 60 |
+| night (cones, glows, lit city) | on | 1 | 0.80 ms | 16.8 ms | 60 |
+| night | on | 2 | 0.72 ms | 16.8 ms | 60 |
+| rain (+ streaks, splashes) | on | 1 | 0.72 ms | 16.8 ms | 60 |
+| rain | on | 2 | 0.84 ms | 33.3 ms | 59 |
 
-Frame times are capped by vsync; the render cost is the meaningful number. The sprite cache makes it roughly **2× cheaper**, and either way under 6 % of the 16.7 ms frame budget is used. The in-game "Performance paneli" setting shows live FPS, render time and cache hit rate. These are sandbox measurements, not measurements on real phones.
+Frame times are capped by vsync; the render cost is the meaningful number, and it stays under 1 ms (≈ 5 % of the 16.7 ms budget) even at night in the rain. Before the cone culling, night at DPR 2 dropped to 38 fps in this software-rasterised setup: additive fill-rate, not draw calls, was the bottleneck. The final boss (30 vehicles, night) renders in 0.6–0.8 ms across runs (`docs/screenshots/12-final-boss-perf.jpg`). The in-game "Performance paneli" setting shows live FPS, render time, cache hit rate, particle count and zoom. These are sandbox measurements, not measurements on real phones.
 
 ---
 
@@ -246,10 +265,58 @@ Frame times are capped by vsync; the render cost is the meaningful number. The s
 
 | Area | How it was verified |
 |---|---|
-| Geometry, rules, engine, campaign, save/economy, Supabase client wire format, sync merge, edge function flow, SQL/TS catalog consistency | `npm test`: 63 tests, all passing |
-| All 50 levels solvable, with a verifying replay | bot + `verifyReplay` in `campaign.test.mjs` |
-| Real browser: menu → level 1 → wrong tap (penalty, heart lost) → correct taps via real hit-testing → win → save; queue no-op; garage buy/equip; editor; boss, lights, roundabout; mobile layout; 0 console errors | `scripts/e2e.mjs` (headless Chromium) |
-| Supabase against a **live** project | **Not run** (no network or Postgres in the build sandbox). The SQL was reviewed and its catalog/params are checked by tests, and the edge handler was tested with mocked GoTrue/PostgREST. See `docs/SUPABASE.md`. |
+| Geometry, rules, engine (incl. gridlock, counters, waitSince), campaign, daily/endless modes, achievements, practice analytics, coach scripts, save v2 migration, store (runs, streak, records), routing, share codec, editor model round-trip, render geometry (occlusion safety, camera fit, colour grade), Supabase client wire format, sync merge + race, edge function (campaign + daily), SQL/TS consistency | `npm test`: **100 tests**, all passing (CI on every push) |
+| All 50 levels solvable, with a verifying replay; 14 consecutive daily levels solvable without penalties; endless always ends | bot + `verifyReplay` in `campaign.test.mjs` / `modes.test.mjs` |
+| Real browser (`scripts/e2e.mjs`, headless Chromium, fails on any console error): first play with the coach → wrong tap (penalty, heart lost) → correct taps via real hit-testing → win → save + achievement; keyboard play to 3 stars; "why?" tooltip on hover; queue no-op; lights, roundabout, boss, night, rain; back button, deep links, shared `#/custom/` links; daily; endless; statistics; achievements; garage buy/equip; editor; mobile; service worker + **offline reload and play**; final boss render < 4 ms | 22 checks, all passing |
+| Supabase against a **live** project | **Not run** (no network or Postgres in the build sandbox). Both migrations were reviewed, their catalog/params/grants are checked by tests, and the edge handler was tested with mocked GoTrue/PostgREST. See `docs/SUPABASE.md`. |
 | React Native port | Guide only (`docs/REACT_NATIVE.md`), not compiled here |
+| Real phones | Not tested here (layout checked at 390×844 in headless Chromium) |
 
 Known simplifications of the traffic model: one lane per direction, no pedestrians, trams or U-turns, a single roundabout lane, and a police car without a siren behaves as a normal car.
+
+---
+
+## 11. v3: presentation, modes and platform
+
+### 11.1 Content-fit camera
+
+v2 fitted a disc of radius R (`scale = W / 4R`), but the content is a cross: arm length E spans only ±E·s horizontally and ±E·s/2 vertically. v3 computes E from the level — `stopU + slots·1.6 + 1.0`, where `slots` is the longest initial queue (+1 if the arm has arrivals), capped at 2 on portrait and 4 on landscape — and fits `scale = min((W − 16) / 2E, H_avail / (E + 1.7), 72)`. On a 390×844 phone that is 31 px/unit instead of 21 (tested). Cars queued beyond the screen edge are summarised by a "+N" chip on the lane (red/blue when an emergency vehicle is among them); in endless mode each lane shows its fill "n/7".
+
+### 11.2 Occlusion-safe static city
+
+Everything that never moves (buildings, parked cars, park, T-junction closures, trees far from traffic) is painted once into the static layer, i.e. *under* every vehicle. That is only correct if no static object can cover a vehicle standing behind it. With the 2:1 camera a box of height h covers exactly the ground points `(x − k, y − k)` for `0 < k ≤ 0.95·h` of its footprint, so a vehicle ground point V is wrongly covered iff the ray `V + (k, k)` enters the footprint. `tests/scene.test.mjs` samples every lane and every junction path (with the largest vehicle footprint) on every layout the game or the editor can produce (cross, controller cross, 4 T variants, 5 roundabouts) and checks every static box — including balconies, awnings, canopies and static trees. Trees that *can* overlap traffic are depth-sorted props instead, and fade to 42 % when a waiting car is behind them.
+
+### 11.3 Ambience
+
+`LevelDef.ambience` (day / evening / night / rain) is cosmetic; the rules never change. Grades (`GRADES` in `color.ts`) are per-channel multiply + lift + desaturation, applied when a colour is *used*, with one cache per grade, so switching costs nothing and the static layer, props and sprites share them. Emissive things (head/tail lights, lit windows at 60 % night / 25 % evening, lamp bulbs, signal lamps, sirens, the penalty flash) bypass the grade. Night adds lamp pools (static, additive), headlight cones and glows (per frame); rain adds puddles, wet reflections and screen-space streaks with splashes. Campaign: 27 day, 9 evening, 8 rain, 6 night levels.
+
+### 11.4 Modes
+
+- **Daily challenge.** `id = 100000 + dayIndex` (days since 2026-01-01). The weekday picks one of 7 themes (equal roads, main road, lights, roundabout, T, controller, sirens); a seeded generator builds candidates, the bot proves them and sets par. The same id always yields the same level, so the **server rebuilds it from the id** to verify replays. The streak only counts the player's local "today"; the last 6 days stay playable from links, future days never.
+- **Endless.** 320 arrivals with shrinking gaps (tuned so even a 0.2 s-reaction bot gridlocks after ~90–115 vehicles). The run ends when lives run out or a lane holds more than 7 vehicles (`EngineOptions.overflowAt`, event `gridlock`, `endReason`). Score = vehicles through. It never pays coins, so the server-authoritative economy is never contradicted; records are local.
+- **Custom.** Editor test runs and shared `#/custom/L1.…` links. No rewards.
+
+### 11.5 Learning aids
+
+- **Coach** (`LevelDef.coach`): steps `{ vehicle: "E0", text }` for the teaching levels 1, 2, 3, 5, 11, 21 and 31. Vehicle ids are validated; a test replays every script step by step and requires each step to be a legal move at that moment. The hand points at the car; the step advances when that car departs.
+- **"Why?"** Hovering (mouse) or long-pressing (touch, 450 ms) a front car calls `engine.preview(id)` — the same `canVehicleMove` — and shows the verdict, the rule and dashed links to the vehicles it must yield to.
+- **Intent badges** above front cars (turn arrow, optional key 1–4), impatience bubbles after 8 s / a honk after 14 s.
+- **Practice.** Violations are counted per rule in the save; `weakestRule()` maps the most frequent one to the level that teaches it ("Mashq qilish").
+
+### 11.6 Achievements
+
+Twenty achievements are pure functions of an `AchievementContext` derived from the save (no event log), evaluated after every run, purchase and sync and once at boot (for migrated saves). Rewards are cosmetic exclusives only (oltin / tungi ko'k paint, bayroq flag, qovun melons) that are not in the server shop catalog.
+
+### 11.7 Editor model
+
+`editor-model.ts` maps the form state to a `LevelDef` and back. The mapping is lossless: all 50 campaign levels round-trip to an identical canonical form (tested), which is why the editor can open any campaign level as a template. It covers queues, timed arrivals, hero cars, signs, signal phases/amber/all-red/offset/flashing windows, preset or hand-written controller scripts, ambience, lives, texts and imported coach steps. v1 drafts migrate. The live preview runs a `GameEngine` driven by the greedy bot in a loop.
+
+### 11.8 Routing, sharing, PWA
+
+- Hash routes (`#/levels`, `#/play/12`, `#/daily/2026-09-28`, `#/endless/cross`, `#/custom/<code>`, …) are pure (`router.ts`). Navigation pushes history entries; `popstate` maps back to store actions, so the back button, reloads and links work. Locked levels redirect to the level list.
+- Share code: `"L1." + base64url(UTF-8(canonical JSON))`. Canonical form = fixed key order, defaults and derived fields dropped, arrivals sorted, so `encode(decode(code)) === code`. Decoding runs the untrusted-input validator.
+- `scripts/build-sw.mjs` (part of `npm run build`) generates `sw.js`: it precaches the page, styles, all compiled modules, the self-hosted Roboto fonts and small icons, with a cache name derived from a SHA-256 over every precached file. Same files → byte-identical worker (CI checks it is committed up to date). Page navigations are network-first with the cached shell as the offline fallback; game files are cache-first so one worker always serves one consistent version; cross-origin (Supabase) requests are never intercepted.
+
+### 11.9 Supabase v3
+
+Migration `20260928000000_v3.sql` widens the level-id checks to `1..1000 ∪ 100000..199999`, tightens display names (trimmed, no control characters), replaces `leaderboard` with a version that returns `is_me` and adds `my_rank(p_level)` for signed-in users. `submit-run` resolves campaign ids or rebuilds in-window daily levels (`dailyAcceptable`: UTC today −7 … +1). The client's `leaderboard()` waits for the in-flight sync so the player's newest verified result is on the board. v3 also fixed a sync race: runs finished while a sync was in flight used to be dropped from the queue; sync requests now chain.

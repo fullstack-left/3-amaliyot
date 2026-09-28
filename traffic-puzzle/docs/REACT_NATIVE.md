@@ -28,13 +28,14 @@ export const useApp = create<AppState>()(
   persist(
     (set, get) => ({
       save: defaultSave(),
-      finishLevel(def, result, replay) {
+      // target = { kind: 'campaign' | 'daily' | 'endless' | 'custom', … } as in src/web/app.ts
+      finishRun(target, def, result, replay, extras) {
         const prev = get().save.progress[def.id]?.stars ?? 0;
-        const reward = computeReward(def.band, result, prev);
-        set((s) => ({ save: { ...s.save, coins: s.save.coins + reward.total /* … same as web app.ts */ } }));
+        const reward = target.kind === 'campaign' ? computeReward(def.band, result, prev) : undefined;
+        set((s) => ({ save: { ...s.save, coins: s.save.coins + (reward?.total ?? 0) /* … same as web app.ts */ } }));
         return reward;
       },
-      // buy, equip, cloudSync … copied from src/web/app.ts
+      // daily streak, endless records, achievements, buy, equip, cloudSync … copied from src/web/app.ts
     }),
     { name: 'chorraha.save.v1', storage: createJSONStorage(() => AsyncStorage) },
   ),
