@@ -1,0 +1,7 @@
+# Supabase CLI project config (partial — CLI defaults apply to everything else).
+# Usage: see docs/SUPABASE.md
+project_id = "chorraha-boshqaruvi"
+
+[functions.submit-run]
+# The gateway rejects requests without a valid user JWT (anonymous users included).
+verify_jwt = true

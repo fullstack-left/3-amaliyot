@@ -1,0 +1,36 @@
+{
+  "name": "chorraha-boshqaruvi",
+  "version": "3.0.0",
+  "description": "Chorraha Boshqaruvi (Traffic Puzzle) — izometrik chorraha boshqotirmasi: deterministik qoidalar yadrosi, 50 bosqich, kunlik va cheksiz rejimlar, yutuqlar, garaj, offline PWA, Supabase sinxronizatsiya",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/build-sw.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.edge.json",
+    "campaign": "npm run build && node scripts/build-campaign.mjs && npm run build",
+    "test": "npm run build && node scripts/build-edge.mjs && tsc -p tsconfig.edge.json && node --test --experimental-strip-types --test-timeout=90000 tests/*.test.mjs",
+    "serve": "node scripts/serve.mjs",
+    "start": "npm run build && node scripts/serve.mjs",
+    "build:edge": "npm run build && node scripts/build-edge.mjs",
+    "e2e": "node scripts/e2e.mjs",
+    "perf": "node scripts/perf.mjs",
+    "icons": "node scripts/build-icons.mjs"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2"
+  },
+  "keywords": [
+    "game",
+    "isometric",
+    "offline",
+    "puzzle",
+    "pwa",
+    "supabase",
+    "traffic",
+    "typescript"
+  ],
+  "license": "MIT"
+}

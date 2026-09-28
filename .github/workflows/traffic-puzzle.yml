@@ -1,0 +1,33 @@
+name: traffic-puzzle
+
+on:
+  push:
+    paths: ['traffic-puzzle/**', '.github/workflows/traffic-puzzle.yml']
+  pull_request:
+    paths: ['traffic-puzzle/**', '.github/workflows/traffic-puzzle.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: traffic-puzzle
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install (TypeScript only)
+        run: npm install --no-audit --no-fund
+      - name: Build + tests (core rules, 50 levels, modes, render geometry, editor, web, edge function)
+        run: npm test
+      - name: Committed dist/ matches the sources
+        run: |
+          if [ -n "$(git status --porcelain -- dist src/content/campaign.data.ts sw.js)" ]; then
+            echo "::error::dist/ or sw.js is out of date — run 'npm run build' and commit the result"
+            git status --porcelain -- dist src/content/campaign.data.ts sw.js
+            exit 1
+          fi
