@@ -20,7 +20,7 @@ import { loadLevel, type Level } from '../../core/level.js';
 import { makeReplay } from '../../core/replay.js';
 import type { MoveDecision, Reason } from '../../core/rules.js';
 import type { Gesture, LevelDef } from '../../core/types.js';
-import { resolveTarget, type App, type PlayTarget, type RunSummary } from '../app.js';
+import { resolveTarget, type App, type Leaderboard, type PlayTarget, type RunSummary } from '../app.js';
 import { clear, fmtTime, h, type Child } from '../dom.js';
 import { copyText, countUp, launchConfetti, prefersReducedMotion } from '../fx.js';
 import { AMBIENCE_ICON, AMBIENCE_UZ, icon, iconOf, REASON_ICON, starRow, type IconName } from '../icons.js';
@@ -640,6 +640,41 @@ export function mountPlay(root: HTMLElement, app: App): () => void {
     if (result.completed && result.stars === 3 && effectsOn()) stopConfetti = launchConfetti(view);
   }
 
+  /** Server-verified top results (cloud sync on); filled in asynchronously after the sync. */
+  function boardBlock(levelId: number): HTMLElement | null {
+    if (mode !== 'campaign' && mode !== 'daily') return null;
+    if (!store.getState().save.cloud.enabled) return null;
+    const el = h('div', { class: 'res-board loading' }, h('div', { class: 'res-sub' }, icon('trophy'), ' Reyting'), h('small', null, 'Natija serverda tekshirilmoqda…'));
+    void store
+      .getState()
+      .leaderboard(levelId, 5)
+      .then((lb) => {
+        if (!el.isConnected) return;
+        if (!lb) {
+          el.replaceChildren(h('div', { class: 'res-sub' }, icon('trophy'), ' Reyting'), h('small', null, "Server bilan bog'lanib bo'lmadi — natija navbatda turibdi."));
+          return;
+        }
+        fillBoard(el, lb);
+      });
+    return el;
+  }
+
+  function fillBoard(el: HTMLElement, lb: Leaderboard) {
+    el.classList.remove('loading');
+    const row = (rank: number, name: string, stars: number, ms: number, me: boolean) =>
+      h('div', { class: `lb-row${me ? ' me' : ''}` }, h('span', { class: 'lb-rank' }, `${rank}.`), h('span', { class: 'lb-name' }, me ? `${name} (siz)` : name), starRow(stars, 3, 'lb-stars'), h('span', { class: 'lb-time' }, fmtTime(ms)));
+    const rows = lb.rows.map((r) => row(r.rank, r.display_name, r.stars, r.best_time_ms, r.is_me));
+    const mineShown = lb.rows.some((r) => r.is_me);
+    const parts: Node[] = [
+      h('div', { class: 'res-sub' }, icon('trophy'), ' Reyting', lb.me ? h('small', null, ` · ${lb.me.total} ta o'yinchi`) : null),
+      ...(rows.length ? rows : [h('small', null, "Hali natija yo'q — birinchi bo'ling!")]),
+    ];
+    if (lb.me && !mineShown) {
+      parts.push(h('div', { class: 'lb-gap' }, '…'), row(lb.me.rank, store.getState().save.profile.name || 'Siz', lb.me.stars, lb.me.best_time_ms, true));
+    }
+    el.replaceChildren(...parts);
+  }
+
   function winCard(result: LevelResult, summary: RunSummary): HTMLElement {
     const next = mode === 'campaign' && def.id < LEVEL_COUNT ? def.id + 1 : null;
     const title = mode === 'campaign' ? `${def.id}-bosqich yakunlandi!` : mode === 'daily' ? 'Kunlik chorraha yakunlandi!' : 'Sinov yakunlandi!';
@@ -676,6 +711,7 @@ export function mountPlay(root: HTMLElement, app: App): () => void {
       summary.daily
         ? h('div', { class: 'res-streak' }, icon('fire'), summary.daily.counted ? ` Ketma-ket: ${summary.daily.streak} kun` : " Bu kun seriyaga qo'shilmaydi (bugungi emas)")
         : null,
+      boardBlock(def.id),
       achievementRow(summary),
       h(
         'div',

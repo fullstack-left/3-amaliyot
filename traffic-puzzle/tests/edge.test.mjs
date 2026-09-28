@@ -125,3 +125,69 @@ test('edge: duplicate replay → 409, database failure → 500', async () => {
   const broken = backend({ rpc: () => ({ status: 500, json: { message: 'boom' } }) });
   assert.equal((await broken.handler(post({ levelId: 3, replay: bot.replay }))).status, 500);
 });
+
+// ---------------------------------------------------------------------------
+// v3: daily challenges on the server + migration 2
+// ---------------------------------------------------------------------------
+import { createHandler as createHandlerAt, resolveLevel } from '../supabase/functions/submit-run/handler.ts';
+import { dailyAcceptable, dailyId, dailyLevel, dayIndexOf } from '../dist/content/daily.js';
+import { loadLevel } from '../dist/core/index.js';
+
+const SQL2 = readFileSync(new URL('../supabase/migrations/20260928000000_v3.sql', import.meta.url), 'utf8');
+const NOW = Date.UTC(2026, 8, 28, 5, 30); // 2026-09-28 05:30 UTC
+const TODAY = dayIndexOf('2026-09-28');
+
+function backendAt(nowMs) {
+  const calls = [];
+  const fetchFn = async (url, init = {}) => {
+    const body = init.body ? JSON.parse(init.body) : undefined;
+    calls.push({ url, init, body });
+    if (url.endsWith('/auth/v1/user')) return new Response(JSON.stringify({ id: 'user-1' }), { status: 200 });
+    if (url.endsWith('/rest/v1/rpc/apply_run')) return new Response(JSON.stringify({ reward: 40, coins: 140, prev_stars: 0 }), { status: 200 });
+    return new Response('{}', { status: 404 });
+  };
+  return { calls, handler: createHandlerAt(ENV, fetchFn, () => nowMs) };
+}
+
+test('edge v3: the daily window is today ± timezone slack plus the 6-day archive', () => {
+  for (const d of [TODAY + 1, TODAY, TODAY - 1, TODAY - 7]) assert.equal(dailyAcceptable(d, NOW), true, `day ${d - TODAY}`);
+  for (const d of [TODAY + 2, TODAY - 8, -1, 1.5]) assert.equal(dailyAcceptable(d, NOW), false, `day ${d - TODAY}`);
+  assert.equal(resolveLevel(dailyId(TODAY), NOW).id, dailyId(TODAY));
+  assert.equal(resolveLevel(dailyId(TODAY + 5), NOW), null);
+  assert.equal(resolveLevel(12, NOW).id, 12);
+  for (const bad of ['12', 12.5, null, 200000, 1001]) assert.equal(resolveLevel(bad, NOW), null, String(bad));
+});
+
+test('edge v3: a daily replay is verified against the server-rebuilt level', async () => {
+  const def = dailyLevel(TODAY);
+  const bot = autoplay(loadLevel(def));
+  assert.ok(bot.completed);
+  const { handler, calls } = backendAt(NOW);
+  const res = await handler(post({ levelId: dailyId(TODAY), replay: bot.replay }));
+  assert.equal(res.status, 200, await res.clone().text());
+  const rpc = calls.find((c) => c.url.endsWith('/rest/v1/rpc/apply_run'));
+  assert.equal(rpc.body.p_level, dailyId(TODAY));
+  assert.equal(rpc.body.p_band_bonus, BAND_BONUS[def.band]);
+  // same replay claimed for another day → the rebuilt level differs → rejected before the DB
+  const other = backendAt(NOW);
+  const res2 = await other.handler(post({ levelId: dailyId(TODAY - 1), replay: bot.replay }));
+  assert.equal(res2.status, 422);
+  assert.equal(other.calls.filter((c) => c.url.includes('apply_run')).length, 0);
+  // outside the window → unknown level
+  const late = backendAt(NOW + 9 * 86_400_000);
+  assert.equal((await late.handler(post({ levelId: dailyId(TODAY), replay: bot.replay }))).status, 404);
+});
+
+test('SQL v3: daily ids allowed, leaderboard marks the caller, my_rank for signed-in users only', () => {
+  assert.match(SQL2, /level_progress_level_id_check\s+check \(level_id between 1 and 1000 or level_id between 100000 and 199999\)/);
+  assert.match(SQL2, /runs_level_id_check\s+check \(level_id between 1 and 1000 or level_id between 100000 and 199999\)/);
+  assert.match(SQL2, /returns table \(rank bigint, display_name text, stars smallint, best_time_ms integer, is_me boolean\)/);
+  assert.match(SQL2, /lp\.user_id = \(select auth\.uid\(\)\)/);
+  assert.match(SQL2, /security definer\s+set search_path = ''/);
+  assert.match(SQL2, /grant execute on function public\.leaderboard\(integer, integer\) to anon, authenticated;/);
+  assert.match(SQL2, /revoke all on function public\.my_rank\(integer\)\s+from public, anon;/);
+  assert.match(SQL2, /grant execute on function public\.my_rank\(integer\)\s+to authenticated;/);
+  // the id ranges match the TypeScript constants
+  assert.equal(dailyId(0), 100000);
+  assert.doesNotMatch(SQL2, /create policy/); // v3 adds no client write paths
+});

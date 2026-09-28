@@ -536,6 +536,41 @@ export function mountPlay(root, app) {
         if (result.completed && result.stars === 3 && effectsOn())
             stopConfetti = launchConfetti(view);
     }
+    /** Server-verified top results (cloud sync on); filled in asynchronously after the sync. */
+    function boardBlock(levelId) {
+        if (mode !== 'campaign' && mode !== 'daily')
+            return null;
+        if (!store.getState().save.cloud.enabled)
+            return null;
+        const el = h('div', { class: 'res-board loading' }, h('div', { class: 'res-sub' }, icon('trophy'), ' Reyting'), h('small', null, 'Natija serverda tekshirilmoqda…'));
+        void store
+            .getState()
+            .leaderboard(levelId, 5)
+            .then((lb) => {
+            if (!el.isConnected)
+                return;
+            if (!lb) {
+                el.replaceChildren(h('div', { class: 'res-sub' }, icon('trophy'), ' Reyting'), h('small', null, "Server bilan bog'lanib bo'lmadi — natija navbatda turibdi."));
+                return;
+            }
+            fillBoard(el, lb);
+        });
+        return el;
+    }
+    function fillBoard(el, lb) {
+        el.classList.remove('loading');
+        const row = (rank, name, stars, ms, me) => h('div', { class: `lb-row${me ? ' me' : ''}` }, h('span', { class: 'lb-rank' }, `${rank}.`), h('span', { class: 'lb-name' }, me ? `${name} (siz)` : name), starRow(stars, 3, 'lb-stars'), h('span', { class: 'lb-time' }, fmtTime(ms)));
+        const rows = lb.rows.map((r) => row(r.rank, r.display_name, r.stars, r.best_time_ms, r.is_me));
+        const mineShown = lb.rows.some((r) => r.is_me);
+        const parts = [
+            h('div', { class: 'res-sub' }, icon('trophy'), ' Reyting', lb.me ? h('small', null, ` · ${lb.me.total} ta o'yinchi`) : null),
+            ...(rows.length ? rows : [h('small', null, "Hali natija yo'q — birinchi bo'ling!")]),
+        ];
+        if (lb.me && !mineShown) {
+            parts.push(h('div', { class: 'lb-gap' }, '…'), row(lb.me.rank, store.getState().save.profile.name || 'Siz', lb.me.stars, lb.me.best_time_ms, true));
+        }
+        el.replaceChildren(...parts);
+    }
     function winCard(result, summary) {
         const next = mode === 'campaign' && def.id < LEVEL_COUNT ? def.id + 1 : null;
         const title = mode === 'campaign' ? `${def.id}-bosqich yakunlandi!` : mode === 'daily' ? 'Kunlik chorraha yakunlandi!' : 'Sinov yakunlandi!';
@@ -554,7 +589,7 @@ export function mountPlay(root, app) {
             ? null
             : h('div', { class: 'reward' }, h('div', { class: 'reward-total' }, icon('coin'), ' ', coinEl), h('small', null, `mashinalar ${summary.reward.vehicles} · bosqich ${summary.reward.completion} · yulduzlar ${summary.reward.stars}`)), summary.daily
             ? h('div', { class: 'res-streak' }, icon('fire'), summary.daily.counted ? ` Ketma-ket: ${summary.daily.streak} kun` : " Bu kun seriyaga qo'shilmaydi (bugungi emas)")
-            : null, achievementRow(summary), h('div', { class: 'modal-actions' }, next ? h('button', { class: 'btn primary', onclick: () => { closeModal(); store.getState().play(next); } }, 'Keyingi bosqich ', icon('next')) : null, mode === 'campaign' && def.id === LEVEL_COUNT ? h('span', { class: 'res-final' }, icon('crown'), " Barcha bosqichlar o'tildi!") : null, h('button', { class: 'btn', onclick: () => restart() }, 'Qayta o‘ynash'), h('button', { class: 'btn', title: 'Ulashish', onclick: () => void share(result) }, icon('share'), ' Ulashish'), h('button', { class: 'btn ghost', onclick: () => exit() }, custom ? 'Muharrir' : mode === 'campaign' ? 'Bosqichlar' : 'Menyu')));
+            : null, boardBlock(def.id), achievementRow(summary), h('div', { class: 'modal-actions' }, next ? h('button', { class: 'btn primary', onclick: () => { closeModal(); store.getState().play(next); } }, 'Keyingi bosqich ', icon('next')) : null, mode === 'campaign' && def.id === LEVEL_COUNT ? h('span', { class: 'res-final' }, icon('crown'), " Barcha bosqichlar o'tildi!") : null, h('button', { class: 'btn', onclick: () => restart() }, 'Qayta o‘ynash'), h('button', { class: 'btn', title: 'Ulashish', onclick: () => void share(result) }, icon('share'), ' Ulashish'), h('button', { class: 'btn ghost', onclick: () => exit() }, custom ? 'Muharrir' : mode === 'campaign' ? 'Bosqichlar' : 'Menyu')));
         if (mode !== 'custom')
             setTimeout(() => countUp(coinEl, summary.reward.total, 900, '+'), 450);
         return card;

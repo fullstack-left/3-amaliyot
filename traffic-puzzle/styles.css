@@ -307,6 +307,16 @@ kbd {
 .small { font-size: 12.5px; }
 .amb-note .ic { fill: #fde68a; }
 
+.res-board { background: #13203b; border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; margin-bottom: 10px; }
+.res-board.loading small { color: var(--muted); }
+.lb-row { display: grid; grid-template-columns: 28px 1fr auto 64px; gap: 8px; align-items: center; padding: 3px 4px; border-radius: 6px; font-size: 13.5px; }
+.lb-row.me { background: rgba(251, 191, 36, 0.14); outline: 1px solid rgba(251, 191, 36, 0.45); }
+.lb-rank { color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; }
+.lb-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lb-stars .ic { width: 13px; height: 13px; }
+.lb-time { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
+.lb-gap { text-align: center; color: var(--muted); line-height: 1; }
+
 /* menu v3 */
 .menu { overflow-y: auto; height: 100vh; }
 .menu-canvas { position: fixed; }

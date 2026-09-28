@@ -255,3 +255,86 @@ test('resolveTarget: campaign, daily, endless and custom targets', () => {
   const bot = autoplay(getLevel(2));
   assert.equal(bot.completed, true);
 });
+
+test('store: leaderboard is null offline; with cloud it waits for the sync, returns rows + own rank', async () => {
+  const offline = createApp(new MemoryStorage(), { now: fixedNow('2026-09-27T10:00:00') });
+  assert.equal(await offline.store.getState().leaderboard(12), null);
+
+  const st = new MemoryStorage();
+  st.setItem(SAVE_KEY, JSON.stringify({
+    version: 2,
+    cloud: { url: 'https://demo.supabase.co', anonKey: 'ANON', enabled: true, session: SESSION, pending: [], lastSync: null },
+  }));
+  const order = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    const u = String(url);
+    order.push(u.replace('https://demo.supabase.co', ''));
+    const reply = (json, status = 200) => new Response(JSON.stringify(json), { status });
+    if (u.includes('/rest/v1/profiles?select')) {
+      await new Promise((r) => setTimeout(r, 30)); // slow sync
+      return reply([{ coins: 5 }]);
+    }
+    if (u.includes('/rest/v1/level_progress')) return reply([]);
+    if (u.includes('/rest/v1/garage_items')) return reply([]);
+    if (u.endsWith('/rest/v1/rpc/leaderboard')) return reply([{ rank: 1, display_name: 'Ali', stars: 3, best_time_ms: 9000, is_me: false }]);
+    if (u.endsWith('/rest/v1/rpc/my_rank')) return reply([{ rank: 7, total: 31, stars: 2, best_time_ms: 14000 }]);
+    return reply({ message: 'no route' }, 404);
+  };
+  try {
+    const app = createApp(st, { now: fixedNow('2026-09-27T10:00:00') });
+    const s = app.store.getState();
+    const sync = s.cloudSync();
+    const board = await s.leaderboard(12, 5);
+    await sync;
+    assert.deepEqual(board.rows.map((r) => r.display_name), ['Ali']);
+    assert.equal(board.me.rank, 7);
+    // the board is read only after the sync finished (so the newest result is on it)
+    assert.ok(order.indexOf('/rest/v1/rpc/leaderboard') > order.findIndex((x) => x.startsWith('/rest/v1/garage_items')), order.join(' '));
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test('store: runs finished while a sync is in flight stay queued', async () => {
+  const st = new MemoryStorage();
+  st.setItem(SAVE_KEY, JSON.stringify({
+    version: 2,
+    cloud: { url: 'https://demo.supabase.co', anonKey: 'ANON', enabled: true, session: SESSION, pending: [], lastSync: null },
+  }));
+  const realFetch = globalThis.fetch;
+  let release;
+  const gate = new Promise((r) => (release = r));
+  const submitted = [];
+  globalThis.fetch = async (url, init = {}) => {
+    const u = String(url);
+    const reply = (json) => new Response(JSON.stringify(json), { status: 200 });
+    if (u.includes('/rest/v1/profiles?select')) {
+      await gate;
+      return reply([{ coins: 0 }]);
+    }
+    if (u.includes('/functions/v1/submit-run')) {
+      submitted.push(JSON.parse(init.body).levelId);
+      return reply({ ok: true, coins: 10 });
+    }
+    return reply([]);
+  };
+  try {
+    const app = createApp(st, { now: fixedNow('2026-09-27T10:00:00') });
+    const s = app.store.getState();
+    const first = s.cloudSync();
+    // a level is won while the first sync waits on the network
+    const bot = autoplay(getLevel(2));
+    s.finishRun({ kind: 'campaign', id: 2 }, getLevel(2).def, { ...RESULT, levelId: 2 }, bot.replay, { hints: 0 });
+    assert.equal(app.store.getState().save.cloud.pending.length, 1);
+    release();
+    await first;
+    // still queued after the first sync (which started before the run existed) …
+    // … and the sync requested by finishRun (chained) submitted it exactly once
+    await app.store.getState().cloudSync();
+    assert.deepEqual(submitted, [2]);
+    assert.equal(app.store.getState().save.cloud.pending.length, 0);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});

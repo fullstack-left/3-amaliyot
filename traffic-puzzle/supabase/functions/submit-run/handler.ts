@@ -3,8 +3,12 @@
  *
  * The client sends { levelId, replay } — never a score. We:
  *   1. identify the caller from their JWT (GoTrue GET /auth/v1/user),
- *   2. re-simulate the replay with the SAME deterministic core engine,
- *   3. hand the verified result to `apply_run` (SQL, service role), which
+ *   2. resolve the level: a campaign level, or a daily challenge (id 100000 +
+ *      day) that the server REBUILDS from the id with the same deterministic
+ *      generator — only for days inside the accepted window (no farming of
+ *      arbitrary past/future days),
+ *   3. re-simulate the replay with the SAME deterministic core engine,
+ *   4. hand the verified result to `apply_run` (SQL, service role), which
  *      computes the reward under an advisory lock, de-duplicates replays and
  *      is the only writer of progress + coins.
  *
@@ -12,8 +16,9 @@
  * and in Node tests.
  */
 
-import { BAND_BONUS, STAR_COINS, loadLevel, verifyReplay, type Replay } from '../_shared/chorraha/core/index.js';
+import { BAND_BONUS, STAR_COINS, loadLevel, verifyReplay, type LevelDef, type Replay } from '../_shared/chorraha/core/index.js';
 import { CAMPAIGN } from '../_shared/chorraha/content/campaign.js';
+import { dailyAcceptable, dailyLevel, dayIndexOfId, isDailyId } from '../_shared/chorraha/content/daily.js';
 
 export interface EdgeEnv {
   url: string;
@@ -40,7 +45,28 @@ async function sha256Hex(text: string): Promise<string> {
   return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-export function createHandler(env: EdgeEnv, fetchFn: FetchFn = (i, init) => fetch(i, init)): (req: Request) => Promise<Response> {
+/** Campaign level or an in-window daily challenge; null otherwise. */
+export function resolveLevel(levelId: unknown, nowMs: number): LevelDef | null {
+  if (typeof levelId !== 'number' || !Number.isInteger(levelId)) return null;
+  const campaign = CAMPAIGN.find((l) => l.id === levelId);
+  if (campaign) return campaign;
+  if (isDailyId(levelId)) {
+    const day = dayIndexOfId(levelId);
+    if (!dailyAcceptable(day, nowMs)) return null;
+    try {
+      return dailyLevel(day);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+export function createHandler(
+  env: EdgeEnv,
+  fetchFn: FetchFn = (i, init) => fetch(i, init),
+  now: () => number = () => Date.now(),
+): (req: Request) => Promise<Response> {
   const base = env.url.replace(/\/+$/, '');
   const service = {
     apikey: env.serviceKey,
@@ -67,7 +93,7 @@ export function createHandler(env: EdgeEnv, fetchFn: FetchFn = (i, init) => fetc
     } catch {
       return json({ ok: false, error: 'bad_json' }, 400);
     }
-    const def = CAMPAIGN.find((l) => l.id === body.levelId);
+    const def = resolveLevel(body.levelId, now());
     if (!def) return json({ ok: false, error: 'unknown_level' }, 404);
 
     const verdict = verifyReplay(loadLevel(def), body.replay as Replay, def.parMs);

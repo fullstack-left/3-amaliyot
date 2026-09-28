@@ -41,6 +41,19 @@ export function dayKeyFromIndex(i) {
     const d = new Date(EPOCH_MS + i * DAY_MS);
     return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
 }
+/** Day index of the UTC calendar date at `nowMs` (the server's notion of "today"). */
+export function utcDayIndex(nowMs) {
+    return Math.floor((nowMs - EPOCH_MS) / DAY_MS);
+}
+/**
+ * Which daily challenges the server accepts at `nowMs`: the player's local
+ * "today" is within ±1 day of UTC, and the client lets players replay the last
+ * `archiveDays` days — so [UTC today − archiveDays − 1, UTC today + 1].
+ */
+export function dailyAcceptable(dayIndex, nowMs, archiveDays = 6) {
+    const t = utcDayIndex(nowMs);
+    return Number.isInteger(dayIndex) && dayIndex >= 0 && dayIndex >= t - archiveDays - 1 && dayIndex <= t + 1;
+}
 export const dailyId = (dayIndex) => DAILY_BASE_ID + dayIndex;
 export const isDailyId = (id) => Number.isInteger(id) && id >= DAILY_BASE_ID && id <= DAILY_MAX_ID;
 export const dayIndexOfId = (id) => id - DAILY_BASE_ID;

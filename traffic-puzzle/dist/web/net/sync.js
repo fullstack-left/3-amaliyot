@@ -79,4 +79,10 @@ export async function fetchLeaderboard(client, levelId, limit = 10) {
     await client.ensureSession();
     return client.rpc('leaderboard', { p_level: levelId, p_limit: limit });
 }
+/** The caller's own position on a level's board (null if they have no verified result yet). */
+export async function fetchMyRank(client, levelId) {
+    await client.ensureSession();
+    const rows = await client.rpc('my_rank', { p_level: levelId });
+    return Array.isArray(rows) && rows.length ? rows[0] : null;
+}
 //# sourceMappingURL=sync.js.map

@@ -118,3 +118,17 @@ export async function fetchLeaderboard(client: SupaClient, levelId: number, limi
   await client.ensureSession();
   return client.rpc<LeaderboardRow[]>('leaderboard', { p_level: levelId, p_limit: limit });
 }
+
+export interface MyRank {
+  rank: number;
+  total: number;
+  stars: number;
+  best_time_ms: number;
+}
+
+/** The caller's own position on a level's board (null if they have no verified result yet). */
+export async function fetchMyRank(client: SupaClient, levelId: number): Promise<MyRank | null> {
+  await client.ensureSession();
+  const rows = await client.rpc<MyRank[]>('my_rank', { p_level: levelId });
+  return Array.isArray(rows) && rows.length ? rows[0] : null;
+}

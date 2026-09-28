@@ -16,7 +16,7 @@ import type { Replay } from '../core/replay.js';
 import { computeReward, type Reward } from '../core/scoring.js';
 import type { LevelDef } from '../core/types.js';
 import { Sfx } from './audio.js';
-import { purchaseRemote, saveLoadoutRemote, setDisplayNameRemote, syncNow } from './net/sync.js';
+import { fetchLeaderboard, fetchMyRank, purchaseRemote, saveLoadoutRemote, setDisplayNameRemote, syncNow, type LeaderboardRow, type MyRank } from './net/sync.js';
 import { SupaClient, SupaError } from './net/supabase.js';
 import {
   applyDailyCompletion,
@@ -65,6 +65,12 @@ export interface RunSummary {
   readonly daily?: { readonly streak: number; readonly counted: boolean };
 }
 
+export interface Leaderboard {
+  readonly rows: readonly LeaderboardRow[];
+  /** The player's own position (also when outside the top rows). */
+  readonly me: MyRank | null;
+}
+
 export interface ResolvedTarget {
   readonly def: LevelDef;
   readonly limits: LevelLimits;
@@ -99,6 +105,8 @@ export interface AppState {
   cloudConnect(email?: string, password?: string, create?: boolean): Promise<void>;
   cloudSync(): Promise<void>;
   cloudDisconnect(): void;
+  /** Verified results for a campaign/daily level (null when cloud sync is off or unreachable). */
+  leaderboard(levelId: number, limit?: number): Promise<Leaderboard | null>;
   notify(text: string, kind?: Toast['kind'], icon?: string): void;
   today(): string;
 }
@@ -195,6 +203,8 @@ export function createApp(storage: Storage | null = typeof localStorage === 'und
   const now = opts.now ?? (() => new Date());
   const initial = loadSave(storage);
 
+  let syncRun: Promise<void> | null = null;
+  let syncAgain = false;
   const store = createStore<AppState>((set, get) => {
     const patchSave = (fn: (s: SaveData) => SaveData) => set({ save: fn(get().save) });
     const navigate = (screen: Screen, target: PlayTarget | null = get().target) => set({ screen, target, nav: get().nav + 1 });
@@ -431,25 +441,34 @@ export function createApp(storage: Storage | null = typeof localStorage === 'und
         }
       },
 
-      async cloudSync() {
-        const s = get().save;
-        const c = client(s);
-        if (!c || get().syncing) return;
-        set({ syncing: true, syncMsg: 'Sinxronlanmoqda…' });
+      cloudSync() {
+        // one sync at a time; requests arriving meanwhile run once more right after
+        if (syncRun) {
+          syncAgain = true;
+          return syncRun;
+        }
+        syncRun = (async () => {
+          try {
+            do {
+              syncAgain = false;
+              await doSync();
+            } while (syncAgain);
+          } finally {
+            syncRun = null;
+          }
+        })();
+        return syncRun;
+      },
+
+      async leaderboard(levelId, limit = 5) {
+        const c = client(get().save);
+        if (!c) return null;
+        if (syncRun) await syncRun.catch(() => undefined);
         try {
-          const out = await syncNow(c, s);
-          patchSave((x) => ({
-            ...x,
-            coins: out.coins ?? x.coins,
-            progress: out.progress,
-            daily: { ...x.daily, results: out.daily },
-            owned: out.owned ? [...new Set([...STARTER_ITEMS, ...out.owned, ...exclusiveRewards(Object.keys(x.achievements))])] : x.owned,
-            cloud: { ...x.cloud, session: c.session, pending: out.kept, lastSync: now().toISOString() },
-          }));
-          set({ syncing: false, syncMsg: `Tayyor: ${out.pushed} ta natija yuborildi${out.rejected ? `, ${out.rejected} rad etildi` : ''}` });
-          get().checkAchievements();
-        } catch (e) {
-          set({ syncing: false, syncMsg: `Sinxronlash xatosi: ${(e as Error).message}` });
+          const [rows, me] = await Promise.all([fetchLeaderboard(c, levelId, limit), fetchMyRank(c, levelId)]);
+          return { rows, me };
+        } catch {
+          return null;
         }
       },
 
@@ -462,6 +481,34 @@ export function createApp(storage: Storage | null = typeof localStorage === 'und
         set({ toast: { text, kind, icon, id: ++toastId } });
       },
     };
+
+    async function doSync(): Promise<void> {
+        const s = get().save;
+        const c = client(s);
+        if (!c || get().syncing) return;
+        set({ syncing: true, syncMsg: 'Sinxronlanmoqda…' });
+        try {
+          const out = await syncNow(c, s);
+          patchSave((x) => ({
+            ...x,
+            coins: out.coins ?? x.coins,
+            progress: out.progress,
+            daily: { ...x.daily, results: out.daily },
+            owned: out.owned ? [...new Set([...STARTER_ITEMS, ...out.owned, ...exclusiveRewards(Object.keys(x.achievements))])] : x.owned,
+            // keep runs finished while this sync was in flight (they were not in `s`)
+            cloud: {
+              ...x.cloud,
+              session: c.session,
+              pending: [...out.kept, ...x.cloud.pending.filter((r) => !s.cloud.pending.includes(r))],
+              lastSync: now().toISOString(),
+            },
+          }));
+          set({ syncing: false, syncMsg: `Tayyor: ${out.pushed} ta natija yuborildi${out.rejected ? `, ${out.rejected} rad etildi` : ''}` });
+          get().checkAchievements();
+        } catch (e) {
+          set({ syncing: false, syncMsg: `Sinxronlash xatosi: ${(e as Error).message}` });
+        }
+    }
   });
 
   sfx.enabled = initial.settings.sound;
