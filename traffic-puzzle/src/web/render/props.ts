@@ -121,7 +121,7 @@ export function drawSign(ctx: Ctx, cam: Camera, d: Dir, sign: SignType, stopU: n
     ctx.closePath();
     ctx.fill();
     ctx.fillStyle = '#fff';
-    ctx.font = `bold ${Math.round(r * 0.62)}px system-ui, sans-serif`;
+    ctx.font = `bold ${Math.round(r * 0.62)}px Roboto, system-ui, sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText('STOP', cx, cy + 1);
@@ -661,7 +661,7 @@ export function drawBadge(ctx: Ctx, x: number, y: number, r: number, turn: Turn,
     ctx.lineWidth = 1.2;
     ctx.stroke();
     ctx.fillStyle = '#1b2a41';
-    ctx.font = `800 ${Math.round(kr * 1.35)}px system-ui, sans-serif`;
+    ctx.font = `800 ${Math.round(kr * 1.35)}px Roboto, system-ui, sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(String(key), kx, ky + 0.5);
@@ -670,7 +670,7 @@ export function drawBadge(ctx: Ctx, x: number, y: number, r: number, turn: Turn,
 
 /** Rounded label (off-screen queue counts, endless lane fill). */
 export function drawChip(ctx: Ctx, x: number, y: number, text: string, bg: string, fg = '#ffffff', size = 12): void {
-  ctx.font = `800 ${size}px system-ui, sans-serif`;
+  ctx.font = `800 ${size}px Roboto, system-ui, sans-serif`;
   const w = Math.max(size * 1.9, ctx.measureText(text).width + size * 1.1);
   const h = size * 1.75;
   ctx.fillStyle = 'rgba(0,0,0,0.25)';

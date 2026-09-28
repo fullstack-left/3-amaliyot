@@ -517,10 +517,12 @@ export class Renderer {
     drawGroundOverlays(ctx, alpha, nowMs) {
         const e = this.engine;
         const cam = this.cam;
-        // headlight cones (additive, under the vehicles)
+        // headlight cones (additive, under the vehicles). A queued car's beam lies
+        // under the car ahead of it, so only front cars and moving cars get one —
+        // this keeps the additive fill-rate low on software-rasterised canvases.
         if (this.light > 0) {
             for (const v of e.vehicles) {
-                if (v.state === 'hidden' || v.state === 'gone')
+                if (v.state === 'hidden' || v.state === 'gone' || v.state === 'queued')
                     continue;
                 const p = this.vehiclePose(v, alpha);
                 const L = v.length / 2;
@@ -743,7 +745,7 @@ export class Renderer {
                 continue;
             }
             ctx.globalAlpha = 1 - t * t;
-            ctx.font = `800 ${Math.round(Math.max(13, this.cam.scale * 0.42))}px system-ui, sans-serif`;
+            ctx.font = `800 ${Math.round(Math.max(13, this.cam.scale * 0.42))}px Roboto, system-ui, sans-serif`;
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
             ctx.lineWidth = 3;

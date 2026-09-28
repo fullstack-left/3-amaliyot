@@ -1,105 +1,72 @@
 /**
- * Level editor: build a LevelDef with forms, validate it with the same
- * validator the server uses, prove it solvable with the bot, play-test it,
- * and export/import JSON.
+ * Level editor (v2): build a LevelDef with forms — queues and timed arrivals,
+ * signs, signal timing (phases, amber, all-red, offset, flashing window),
+ * a preset or hand-made traffic-controller script, ambience, lives, texts —
+ * validate it with the same validator the server uses, watch the autopilot
+ * play it live in the preview, prove it solvable, play-test it, and share it
+ * as a link (#/custom/L1.…) or JSON. Campaign levels can be loaded as templates.
  */
 
-import { BOSS1, BOSS2, BOSS3, BOSS4, BOSS5 } from '../../content/handmade.js';
-import { autoplay, computePar } from '../../core/bot.js';
-import { DIR_LETTERS, DIR_NAMES_UZ, exitOf, dirFromLetter } from '../../core/dir.js';
-import { loadLevel, validateLevel } from '../../core/level.js';
-import type { ControllerDef, DirLetter, JunctionType, LevelDef, SignType, SpawnDef, Turn, VehicleKind } from '../../core/types.js';
+import { CAMPAIGN, getLevelDef } from '../../content/campaign.js';
+import { autoplay, computePar, legalMoves } from '../../core/bot.js';
+import { DIR_LETTERS, DIR_NAMES_UZ, dirFromLetter, exitOf } from '../../core/dir.js';
+import { GameEngine } from '../../core/engine.js';
+import { TICK_MS } from '../../core/kinematics.js';
+import { AMBIENCES, GESTURES, loadLevel, MAX_QUEUE, validateLevel } from '../../core/level.js';
+import type { Ambience, ArrivalDef, DirLetter, Gesture, LevelDef, SignType, SpawnDef, Turn, VehicleKind } from '../../core/types.js';
 import { VEHICLE_KINDS, VEHICLE_SPECS } from '../../core/vehicles.js';
 import type { App } from '../app.js';
 import { clear, fmtTime, h } from '../dom.js';
-import { icon } from '../icons.js';
+import {
+  activeArms,
+  DEFAULT_ALL_RED_MS,
+  DEFAULT_AMBER_MS,
+  defaultState,
+  fromDef,
+  migrateDraft,
+  parseImport,
+  phasesFor,
+  PRESETS,
+  standardPhases,
+  toDef,
+  type ControllerMode,
+  type EditorState,
+  type SignalMode,
+} from '../editor-model.js';
+import { copyText } from '../fx.js';
+import { AMBIENCE_ICON, AMBIENCE_UZ, icon } from '../icons.js';
+import { DEFAULT_RENDER_SETTINGS, Renderer } from '../render/renderer.js';
+import { routeHash } from '../router.js';
+import { encodeLevel } from '../share.js';
 
 const STORAGE_KEY = 'chorraha.editor.v1';
-const CONTROLLERS: Record<string, ControllerDef | null> = { none: null, boss1: BOSS1, boss2: BOSS2, boss3: BOSS3, boss4: BOSS4, boss5: BOSS5 };
 const TURN_UZ: Record<Turn, string> = { straight: "to'g'riga", left: 'chapga', right: "o'ngga" };
 const SIGN_UZ: Record<SignType, string> = { none: 'belgisiz', main: "asosiy yo'l", yield: "yo'l bering", stop: 'STOP' };
+const GESTURE_UZ: Record<Gesture, string> = { arms_side: "qo'llar yonga", right_forward: "o'ng qo'l oldinga", arm_up: "qo'l tepada" };
+const MAX_ARRIVALS = 12;
+const MAX_POSES = 16;
 
-interface EditorState {
-  junction: JunctionType;
-  /** Arm left out for T-junctions / 3-arm roundabouts ('none' = all four arms). */
-  missing: DirLetter | 'none';
-  arms: Record<DirLetter, { sign: SignType; queue: SpawnDef[] }>;
-  signals: 'none' | 'two' | 'four' | 'flash';
-  controller: keyof typeof CONTROLLERS;
-  name: string;
-}
-
-function defaultState(): EditorState {
-  return {
-    junction: 'cross',
-    missing: 'none',
-    arms: {
-      N: { sign: 'none', queue: [{ kind: 'car', turn: 'straight' }] },
-      E: { sign: 'none', queue: [{ kind: 'car', turn: 'straight' }] },
-      S: { sign: 'none', queue: [{ kind: 'car', turn: 'left' }] },
-      W: { sign: 'none', queue: [] },
-    },
-    signals: 'none',
-    controller: 'none',
-    name: 'Mening chorraham',
-  };
-}
-
-/** Arms that exist for the current junction type. */
-function activeArms(s: EditorState): DirLetter[] {
-  if (s.junction === 'cross') return [...DIR_LETTERS];
-  const missing = s.junction === 't' && s.missing === 'none' ? 'N' : s.missing;
-  return DIR_LETTERS.filter((d) => d !== missing);
-}
-
-function toDef(s: EditorState): LevelDef {
-  const armDirs = activeArms(s);
-  const def: LevelDef = {
-    id: 999,
-    name: s.name || 'Maxsus bosqich',
-    band: s.controller !== 'none' ? 'boss' : s.junction === 'roundabout' ? 'roundabout' : 'complex',
-    junction: s.junction,
-    arms: armDirs.map((d) => ({ dir: d, sign: s.junction === 'roundabout' ? 'none' : s.arms[d].sign, queue: s.arms[d].queue.map((q) => ({ ...q })) })),
-  };
-  if (s.signals !== 'none' && s.junction !== 'roundabout' && s.controller === 'none') {
-    const ns = armDirs.filter((d) => d === 'N' || d === 'S');
-    const ew = armDirs.filter((d) => d === 'E' || d === 'W');
-    def.signals =
-      s.signals === 'four'
-        ? { phases: armDirs.map((d) => ({ green: [d], ms: 4500 })) }
-        : { phases: [{ green: ns, ms: 7000 }, { green: ew, ms: 7000 }].filter((p) => p.green.length) };
-    if (s.signals === 'flash') def.signals.flashing = [{ fromMs: 0, toMs: 600000 }];
+function loadDraft(): EditorState {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? migrateDraft(JSON.parse(raw)) : defaultState();
+  } catch {
+    return defaultState();
   }
-  if (s.controller !== 'none' && s.junction === 'cross') def.controller = CONTROLLERS[s.controller]!;
-  return def;
 }
 
-function fromDef(def: LevelDef): EditorState {
-  const s = defaultState();
-  s.junction = def.junction;
-  s.name = def.name;
-  for (const d of DIR_LETTERS) s.arms[d] = { sign: 'none', queue: [] };
-  for (const a of def.arms) s.arms[a.dir] = { sign: a.sign ?? 'none', queue: a.queue.map((q) => ({ ...q })) };
-  const present = new Set(def.arms.map((a) => a.dir));
-  s.missing = DIR_LETTERS.find((d) => !present.has(d)) ?? 'none';
-  s.signals = def.signals ? (def.signals.flashing?.length ? 'flash' : def.signals.phases.length > 2 ? 'four' : 'two') : 'none';
-  s.controller = def.controller ? 'boss3' : 'none';
-  return s;
-}
+const secs = (ms: number) => String(Math.round(ms / 100) / 10);
 
 export function mountEditor(root: HTMLElement, app: App): () => void {
   const { store, sfx } = app;
-  let state: EditorState;
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    state = raw ? (JSON.parse(raw) as EditorState) : defaultState();
-    if (!state.arms || !state.junction) state = defaultState();
-  } catch {
-    state = defaultState();
-  }
+  let state = loadDraft();
   const form = h('div', { class: 'editor-form' });
   const report = h('div', { class: 'editor-report' });
-  const json = h('textarea', { class: 'editor-json', spellcheck: 'false', rows: 10, 'aria-label': 'Level JSON' });
+  const json = h('textarea', { class: 'editor-json', spellcheck: 'false', rows: 8, 'aria-label': 'Level JSON yoki havola', placeholder: 'JSON, L1.… kodi yoki havolani shu yerga qo‘ying' });
+  const canvas = h('canvas', { class: 'editor-canvas', 'aria-label': "Bosqichning jonli ko'rinishi" });
+  const previewStatus = h('div', { class: 'preview-status' });
+  const playBtn = h('button', { class: 'btn small', title: "Avtopilot ko'rsatuvini to'xtatish / davom ettirish", onclick: () => toggleDemo() }, icon('pause'));
+  const ambPill = h('span', { class: 'amb-pill' });
 
   const persist = () => {
     try {
@@ -108,77 +75,281 @@ export function mountEditor(root: HTMLElement, app: App): () => void {
       /* ignore */
     }
   };
+  /** Structural change: re-render the form + rebuild the preview. */
   const change = (fn: () => void) => {
     fn();
     persist();
     render();
+    schedulePreview();
+  };
+  /** Value-only change (typing): keep focus, rebuild the preview. */
+  const tweak = (fn: () => void) => {
+    fn();
+    persist();
+    check(false);
+    schedulePreview();
   };
 
-  const select = <T extends string>(value: T, options: [T, string][], onchange: (v: T) => void) =>
-    h('select', { onchange: (e: Event) => onchange((e.target as HTMLSelectElement).value as T) }, ...options.map(([v, label]) => h('option', { value: v, selected: v === value }, label)));
+  const select = <T extends string>(value: T, options: [T, string][], onchange: (v: T) => void, label?: string) =>
+    h('select', { 'aria-label': label, onchange: (e: Event) => onchange((e.target as HTMLSelectElement).value as T) }, ...options.map(([v, text]) => h('option', { value: v, selected: v === value }, text)));
+  const number = (valueSec: string, onchange: (sec: number) => void, attrs: Record<string, unknown> = {}) =>
+    h('input', {
+      type: 'number',
+      step: '0.5',
+      min: '0',
+      value: valueSec,
+      class: 'num',
+      ...attrs,
+      oninput: (e: Event) => {
+        const v = parseFloat((e.target as HTMLInputElement).value);
+        if (Number.isFinite(v)) onchange(v);
+      },
+    });
 
   const armEnabled = (d: DirLetter): boolean => activeArms(state).includes(d);
+  const turnsFrom = (d: DirLetter): Turn[] => (['straight', 'left', 'right'] as Turn[]).filter((t) => armEnabled(DIR_LETTERS[exitOf(dirFromLetter(d), t)]));
+  const kindOptions = VEHICLE_KINDS.map((kd) => [kd, VEHICLE_SPECS[kd].nameUz] as [VehicleKind, string]);
+
+  function vehicleRow(d: DirLetter, list: (SpawnDef | ArrivalDef)[], k: number, arrival: boolean): HTMLElement {
+    const q = list[k];
+    const turns = turnsFrom(d);
+    if (!turns.includes(q.turn)) q.turn = turns[0] ?? 'straight';
+    return h(
+      'div',
+      { class: 'veh-row' },
+      h('span', { class: 'muted veh-idx' }, `${k + 1}.`),
+      select(q.kind, kindOptions, (v) => change(() => (q.kind = v)), 'Mashina turi'),
+      select(q.turn, turns.map((t) => [t, TURN_UZ[t]] as [Turn, string]), (v) => change(() => (q.turn = v)), "Yo'nalish"),
+      arrival ? number(secs((q as ArrivalDef).atMs), (v) => tweak(() => ((q as ArrivalDef).atMs = Math.round(Math.min(600, v) * 1000))), { title: 'Kelish vaqti (soniya)', 'aria-label': 'Kelish vaqti, s', max: '600' }) : null,
+      h(
+        'label',
+        { class: 'hero-toggle', title: "Mening mashinam (garajdagi mashina, +5 tanga)" },
+        h('input', { type: 'checkbox', checked: !!q.hero, onchange: (e: Event) => change(() => ((e.target as HTMLInputElement).checked ? (q.hero = true) : delete q.hero)) }),
+        icon('car'),
+      ),
+      h('button', { class: 'btn ghost small', title: "O'chirish", 'aria-label': "O'chirish", onclick: () => change(() => list.splice(k, 1)) }, icon('close')),
+    );
+  }
 
   function render() {
     clear(form);
+    const round = state.junction === 'roundabout';
+    // --- general ------------------------------------------------------------
     form.append(
       h(
-        'div',
-        { class: 'form-row' },
-        h('label', null, 'Nomi ', h('input', { value: state.name, oninput: (e: Event) => { state.name = (e.target as HTMLInputElement).value; persist(); } })),
-        h('label', null, 'Turi ', select(state.junction, [['cross', 'X-chorraha'], ['t', 'T-chorraha'], ['roundabout', 'Aylanma']], (v) => change(() => (state.junction = v)))),
-        state.junction !== 'cross'
-          ? h(
-              'label',
-              null,
-              "Yo'q yo'l ",
-              select<DirLetter | 'none'>(
-                state.junction === 't' && state.missing === 'none' ? 'N' : state.missing,
-                [
-                  ...(state.junction === 'roundabout' ? [['none', "hammasi bor (4 ta)"] as [DirLetter | 'none', string]] : []),
-                  ...DIR_LETTERS.map((d, i) => [d, DIR_NAMES_UZ[i]] as [DirLetter | 'none', string]),
-                ],
-                (v) => change(() => (state.missing = v)),
-              ),
-            )
-          : null,
-        state.junction !== 'roundabout'
-          ? h('label', null, 'Svetofor ', select(state.signals, [['none', "yo'q"], ['two', '2 fazali'], ['four', '4 fazali'], ['flash', 'sariq miltillovchi']], (v) => change(() => (state.signals = v))))
-          : null,
-        state.junction === 'cross'
-          ? h('label', null, 'Regulirovshik ', select(state.controller, [['none', "yo'q"], ['boss1', 'BOSS 1'], ['boss2', 'BOSS 2'], ['boss3', 'BOSS 3'], ['boss4', 'BOSS 4'], ['boss5', 'BOSS 5']], (v) => change(() => (state.controller = v))))
-          : null,
+        'section',
+        { class: 'card' },
+        h('h2', null, icon('wrench'), ' Umumiy'),
+        h(
+          'div',
+          { class: 'form-row' },
+          h('label', null, 'Nomi ', h('input', { value: state.name, maxlength: '60', oninput: (e: Event) => tweak(() => (state.name = (e.target as HTMLInputElement).value)) })),
+          h(
+            'label',
+            null,
+            'Turi ',
+            select(state.junction, [['cross', 'X-chorraha'], ['t', 'T-chorraha'], ['roundabout', 'Aylanma']], (v) => change(() => { state.junction = v; state.band = null; })),
+          ),
+          state.junction !== 'cross'
+            ? h(
+                'label',
+                null,
+                "Yo'q yo'l ",
+                select<DirLetter | 'none'>(
+                  state.junction === 't' && state.missing === 'none' ? 'N' : state.missing,
+                  [
+                    ...(round ? [['none', 'hammasi bor (4 ta)'] as [DirLetter | 'none', string]] : []),
+                    ...DIR_LETTERS.map((d, i) => [d, DIR_NAMES_UZ[i]] as [DirLetter | 'none', string]),
+                  ],
+                  (v) => change(() => (state.missing = v)),
+                ),
+              )
+            : null,
+          h('label', null, 'Muhit ', select(state.ambience, AMBIENCES.map((a) => [a, AMBIENCE_UZ[a]] as [Ambience, string]), (v) => change(() => (state.ambience = v)))),
+          h('label', null, 'Jonlar ', select(String(state.lives), ['1', '2', '3', '4', '5'].map((n) => [n, n] as [string, string]), (v) => change(() => (state.lives = Number(v))))),
+          h(
+            'label',
+            null,
+            'Namuna ',
+            select(
+              '',
+              [['', 'bosqichdan nusxa…'] as [string, string], ...CAMPAIGN.map((l) => [String(l.id), `${l.id}. ${l.name}`] as [string, string])],
+              (v) => {
+                const src = v ? getLevelDef(Number(v)) : undefined;
+                if (src) change(() => (state = fromDef(src)));
+              },
+              'Kampaniya bosqichidan nusxa olish',
+            ),
+          ),
+        ),
       ),
     );
+
+    // --- regulation ------------------------------------------------------------
+    const reg = h('section', { class: 'card' }, h('h2', null, icon('light'), ' Tartibga solish'));
+    const regRow = h('div', { class: 'form-row' });
+    if (!round) {
+      regRow.append(
+        h(
+          'label',
+          null,
+          'Svetofor ',
+          select<SignalMode>(
+            state.signals,
+            [['none', "yo'q"], ['two', '2 fazali'], ['four', 'har yo‘lga alohida'], ['flash', 'doim sariq miltillovchi'], ...(state.signals === 'custom' ? [['custom', 'import qilingan fazalar'] as [SignalMode, string]] : [])],
+            (v) =>
+              change(() => {
+                state.signals = v;
+                if (v === 'two' || v === 'four' || v === 'flash') state.phases = standardPhases({ ...state, phases: [] }, v);
+                if (v !== 'none') state.controller = 'none';
+              }),
+          ),
+        ),
+      );
+    }
+    if (state.junction === 'cross') {
+      regRow.append(
+        h(
+          'label',
+          null,
+          'Regulirovshik ',
+          select<ControllerMode>(
+            state.controller,
+            [['none', "yo'q"], ['boss1', 'BOSS 1'], ['boss2', 'BOSS 2'], ['boss3', 'BOSS 3'], ['boss4', 'BOSS 4'], ['boss5', 'BOSS 5'], ['custom', "o'zim yozaman"]],
+            (v) =>
+              change(() => {
+                if (v === 'custom' && state.controller !== 'custom' && state.controller !== 'none') state.poses = PRESETS[state.controller].poses.map((p) => ({ ...p }));
+                state.band = null;
+                state.controller = v;
+                if (v !== 'none') state.signals = 'none';
+              }),
+          ),
+        ),
+      );
+    }
+    reg.append(regRow);
+    if (!round && state.signals !== 'none' && state.signals !== 'flash' && state.controller === 'none') {
+      const phases = phasesFor(state);
+      state.phases = phases;
+      reg.append(
+        h(
+          'div',
+          { class: 'phase-grid' },
+          ...phases.map((p, i) =>
+            h(
+              'label',
+              { class: 'phase' },
+              h('span', null, `${i + 1}-faza: `, h('b', null, p.green.map((d) => DIR_NAMES_UZ[dirFromLetter(d)]).join(' + ')), ' yashil'),
+              number(secs(p.ms), (v) => tweak(() => (state.phases[i] = { ...state.phases[i], ms: Math.max(1000, Math.round(v * 1000)) })), { min: '1', title: 'Yashil davomiyligi, s' }),
+              h('small', null, 's'),
+            ),
+          ),
+          h('label', { class: 'phase' }, h('span', null, 'Sariq'), number(secs(state.amberMs ?? DEFAULT_AMBER_MS), (v) => tweak(() => (state.amberMs = Math.round(v * 1000)))), h('small', null, 's')),
+          h('label', { class: 'phase' }, h('span', null, 'Hammasi qizil'), number(secs(state.allRedMs ?? DEFAULT_ALL_RED_MS), (v) => tweak(() => (state.allRedMs = Math.round(v * 1000)))), h('small', null, 's')),
+          h('label', { class: 'phase' }, h('span', null, 'Siljish (offset)'), number(secs(state.offsetMs), (v) => tweak(() => (state.offsetMs = Math.round(v * 1000)))), h('small', null, 's')),
+        ),
+        h(
+          'div',
+          { class: 'form-row' },
+          h(
+            'label',
+            { class: 'check' },
+            h('input', { type: 'checkbox', checked: state.flashing.length > 0, onchange: (e: Event) => change(() => (state.flashing = (e.target as HTMLInputElement).checked ? [{ fromMs: 10000, toMs: 20000 }] : [])) }),
+            " Svetofor vaqtincha o'chadi (sariq miltillovchi — belgilar amal qiladi)",
+          ),
+          ...state.flashing.map((w, i) =>
+            h(
+              'span',
+              { class: 'flash-window' },
+              number(secs(w.fromMs), (v) => tweak(() => (state.flashing[i] = { ...state.flashing[i], fromMs: Math.round(v * 1000) })), { title: 'Boshlanishi, s' }),
+              ' – ',
+              number(secs(w.toMs), (v) => tweak(() => (state.flashing[i] = { ...state.flashing[i], toMs: Math.round(v * 1000) })), { title: 'Tugashi, s' }),
+              h('small', null, ' s'),
+            ),
+          ),
+        ),
+      );
+    }
+    if (state.junction === 'cross' && state.controller === 'custom') {
+      reg.append(
+        h('p', { class: 'muted small' }, "Ishoralar ketma-ket takrorlanadi. Ko'krak/orqa tomondan — to'xtash; chap/o'ng yondan: to'g'ri va o'ngga (qo'llar yonga), o'ng qo'l oldinga — chap yondan hamma yo'nalish, orqadan o'ngga."),
+        h(
+          'div',
+          { class: 'pose-list' },
+          ...state.poses.map((p, i) =>
+            h(
+              'div',
+              { class: 'veh-row' },
+              h('span', { class: 'muted veh-idx' }, `${i + 1}.`),
+              select(p.gesture, GESTURES.map((g) => [g, GESTURE_UZ[g]] as [Gesture, string]), (v) => change(() => (p.gesture = v)), 'Ishora'),
+              h('span', { class: 'muted' }, "ko'krak:"),
+              select(p.facing, DIR_LETTERS.map((d, k) => [d, DIR_NAMES_UZ[k]] as [DirLetter, string]), (v) => change(() => (p.facing = v)), "Ko'krak tomoni"),
+              number(secs(p.ms), (v) => tweak(() => (p.ms = Math.max(800, Math.round(v * 1000)))), { min: '1', title: 'Davomiyligi, s' }),
+              h('small', null, 's'),
+              h('button', { class: 'btn ghost small', title: "O'chirish", 'aria-label': "O'chirish", disabled: state.poses.length <= 1, onclick: () => change(() => state.poses.splice(i, 1)) }, icon('close')),
+            ),
+          ),
+          state.poses.length < MAX_POSES ? h('button', { class: 'btn small', onclick: () => change(() => state.poses.push({ gesture: 'arm_up', facing: 'N', ms: 1500 })) }, '+ ishora') : null,
+        ),
+      );
+    }
+    form.append(reg);
+
+    // --- arms ---------------------------------------------------------------
     const grid = h('div', { class: 'arm-grid' });
     DIR_LETTERS.forEach((d, i) => {
       if (!armEnabled(d)) return;
       const arm = state.arms[d];
-      const rows = arm.queue.map((q, k) => {
-        const turns = (['straight', 'left', 'right'] as Turn[]).filter((t) => armEnabled(DIR_LETTERS[exitOf(dirFromLetter(d), t)]));
-        return h(
-          'div',
-          { class: 'veh-row' },
-          h('span', { class: 'muted' }, `${k + 1}.`),
-          select(q.kind, VEHICLE_KINDS.map((kd) => [kd, VEHICLE_SPECS[kd].nameUz] as [VehicleKind, string]), (v) => change(() => (q.kind = v))),
-          select(q.turn, turns.map((t) => [t, TURN_UZ[t]] as [Turn, string]), (v) => change(() => (q.turn = v))),
-          h('button', { class: 'btn ghost small', title: "O'chirish", 'aria-label': "O'chirish", onclick: () => change(() => arm.queue.splice(k, 1)) }, icon('close')),
-        );
-      });
+      const firstTurn = turnsFrom(d)[0] ?? 'straight';
       grid.appendChild(
         h(
           'div',
           { class: 'card arm-card' },
           h('h3', null, `${DIR_NAMES_UZ[i]} (${d})`),
-          state.junction !== 'roundabout' ? h('label', null, 'Belgi ', select(arm.sign, (Object.keys(SIGN_UZ) as SignType[]).map((sg) => [sg, SIGN_UZ[sg]] as [SignType, string]), (v) => change(() => (arm.sign = v)))) : null,
-          ...rows,
-          arm.queue.length < 6
-            ? h('button', { class: 'btn small', onclick: () => change(() => arm.queue.push({ kind: 'car', turn: armEnabled(DIR_LETTERS[exitOf(dirFromLetter(d), 'straight')]) ? 'straight' : 'right' })) }, '+ mashina')
+          !round ? h('label', null, 'Belgi ', select(arm.sign, (Object.keys(SIGN_UZ) as SignType[]).map((sg) => [sg, SIGN_UZ[sg]] as [SignType, string]), (v) => change(() => (arm.sign = v)))) : null,
+          h('div', { class: 'arm-sub' }, 'Navbatda turganlar'),
+          ...arm.queue.map((_, k) => vehicleRow(d, arm.queue, k, false)),
+          arm.queue.length < MAX_QUEUE ? h('button', { class: 'btn small', onclick: () => change(() => arm.queue.push({ kind: 'car', turn: firstTurn })) }, '+ mashina') : null,
+          h('div', { class: 'arm-sub' }, 'Keyin keladiganlar ', h('small', null, '(vaqti, s)')),
+          ...arm.arrivals.map((_, k) => vehicleRow(d, arm.arrivals, k, true)),
+          arm.arrivals.length < MAX_ARRIVALS
+            ? h(
+                'button',
+                {
+                  class: 'btn small',
+                  onclick: () => change(() => arm.arrivals.push({ kind: 'car', turn: firstTurn, atMs: (arm.arrivals[arm.arrivals.length - 1]?.atMs ?? 0) + 3000 })),
+                },
+                '+ keladigan',
+              )
             : null,
         ),
       );
     });
     form.appendChild(grid);
+
+    // --- texts ------------------------------------------------------------------
+    form.append(
+      h(
+        'section',
+        { class: 'card' },
+        h('h2', null, icon('book'), ' Matnlar ', h('small', null, '(ixtiyoriy)')),
+        h(
+          'div',
+          { class: 'form-col' },
+          h('input', { value: state.introTitle, maxlength: '80', placeholder: 'Kirish sarlavhasi', oninput: (e: Event) => tweak(() => (state.introTitle = (e.target as HTMLInputElement).value)) }),
+          h('textarea', { rows: 2, maxlength: '400', placeholder: "Kirish matni: o'yinchiga nimani o'rgatmoqchisiz?", oninput: (e: Event) => tweak(() => (state.introText = (e.target as HTMLTextAreaElement).value)) }, state.introText),
+          h('input', { value: state.tip, maxlength: '200', placeholder: 'Maslahat (yutqazganda ko‘rinadi)', oninput: (e: Event) => tweak(() => (state.tip = (e.target as HTMLInputElement).value)) }),
+          state.coach.length
+            ? h(
+                'div',
+                { class: 'form-row' },
+                h('span', { class: 'muted' }, icon('hand'), ` Yordamchi qadamlari: ${state.coach.length} ta (JSON'dan)`),
+                h('button', { class: 'btn ghost small', onclick: () => change(() => (state.coach = [])) }, "O'chirish"),
+              )
+            : null,
+        ),
+      ),
+    );
     check(false);
   }
 
@@ -191,6 +362,7 @@ export function mountEditor(root: HTMLElement, app: App): () => void {
       return null;
     }
     if (v.warnings.length) report.append(h('ul', { class: 'warn' }, ...v.warnings.map((w) => h('li', null, w))));
+    const count = def.arms.reduce((n, a) => n + a.queue.length + (a.arrivals?.length ?? 0), 0);
     if (runBot) {
       const r = autoplay(loadLevel(def));
       if (!r.completed) {
@@ -198,12 +370,104 @@ export function mountEditor(root: HTMLElement, app: App): () => void {
         return null;
       }
       const par = computePar(loadLevel(def));
-      report.append(h('p', { class: 'ok' }, icon('check'), ` To'g'ri va yechiladi. Avtopilot: ${fmtTime((r.ticks * 1000) / 60)}, tez yulduz: ${fmtTime(par)}`));
+      report.append(h('p', { class: 'ok' }, icon('check'), ` To'g'ri va yechiladi. Avtopilot: ${fmtTime((r.ticks * 1000) / 60)}, tez yulduz: ${fmtTime(par)} · ${count} ta mashina`));
       return { ...def, parMs: par };
     }
-    report.append(h('p', { class: 'ok' }, icon('check'), ' Tuzilma to‘g‘ri'));
+    report.append(h('p', { class: 'ok' }, icon('check'), ` Tuzilma to‘g‘ri · ${count} ta mashina`));
     return def;
   }
+
+  // ---- live preview: the autopilot plays the level in a loop ----------------------
+  const renderer = new Renderer(canvas);
+  renderer.settings = { ...DEFAULT_RENDER_SETTINGS, assist: false };
+  let engine: GameEngine | null = null;
+  let demoOn = true;
+  let doneAt = 0;
+  let cooldown = 0;
+  let idleTicks = 0;
+  let previewTimer: ReturnType<typeof setTimeout> | null = null;
+  const lookCtx = () => ({ levelId: 999, ownedModels: ['nexia3', 'cobalt', 'spark', 'gentra', 'damas', 'matiz'], hero: store.getState().save.loadout });
+
+  function rebuildPreview() {
+    const def = toDef(state);
+    const v = validateLevel(def);
+    doneAt = 0;
+    idleTicks = 0;
+    ambPill.replaceChildren(icon(AMBIENCE_ICON[state.ambience]), ` ${AMBIENCE_UZ[state.ambience]}`);
+    if (!v.ok) {
+      engine = null;
+      renderer.setEngine(null, null);
+      previewStatus.replaceChildren(icon('warn'), ` ${v.errors[0]}`);
+      previewStatus.className = 'preview-status err';
+      return;
+    }
+    engine = new GameEngine(loadLevel(def));
+    engine.on((e) => renderer.onEvent(e));
+    renderer.setEngine(engine, lookCtx());
+    previewStatus.className = 'preview-status';
+  }
+  function schedulePreview() {
+    if (previewTimer) clearTimeout(previewTimer);
+    previewTimer = setTimeout(rebuildPreview, 250);
+  }
+  function toggleDemo() {
+    demoOn = !demoOn;
+    playBtn.replaceChildren(icon(demoOn ? 'pause' : 'play'));
+  }
+
+  let raf = 0;
+  let last = performance.now();
+  let acc = 0;
+  let lastStatus = '';
+  const frame = (now: number) => {
+    const dt = Math.min(250, now - last);
+    last = now;
+    if (engine && demoOn) {
+      acc += dt;
+      while (acc >= TICK_MS) {
+        acc -= TICK_MS;
+        if (engine.status === 'playing') {
+          if (--cooldown <= 0) {
+            const m = legalMoves(engine);
+            if (m.length) {
+              engine.tap(m[0].id);
+              cooldown = 24;
+              idleTicks = 0;
+            } else if (engine.queues.some((q) => q[0]?.state === 'waiting')) idleTicks++;
+            else idleTicks = 0;
+          }
+          engine.step();
+        } else if (!doneAt) doneAt = now;
+      }
+      if (doneAt && now - doneAt > 1600) rebuildPreview();
+    }
+    renderer.render(engine && demoOn ? acc / TICK_MS : 0, now);
+    if (engine) {
+      const text =
+        engine.status === 'won'
+          ? `Avtopilot yechdi: ${fmtTime(engine.timeMs())} — qayta boshlanadi`
+          : idleTicks > 60 * 25
+            ? "Avtopilot hech kimni yubora olmayapti — tiqilinch yoki chiqib bo'lmaydigan holat?"
+            : `Avtopilot o'ynayapti · ${engine.cleared}/${engine.total} · ${fmtTime(engine.timeMs())}`;
+      if (text !== lastStatus) {
+        lastStatus = text;
+        previewStatus.replaceChildren(icon(engine.status === 'won' ? 'check' : idleTicks > 60 * 25 ? 'warn' : 'play'), ` ${text}`);
+      }
+    } else lastStatus = '';
+    raf = requestAnimationFrame(frame);
+  };
+
+  const shareLink = async () => {
+    const def = check(false);
+    if (!def) {
+      store.getState().notify('Avval xatolarni tuzating', 'err');
+      return;
+    }
+    const link = `${location.origin}${location.pathname}${routeHash({ screen: 'play', kind: 'custom', code: encodeLevel(def) })}`;
+    json.value = link;
+    const ok = await copyText(link);
+    store.getState().notify(ok ? "Havola nusxalandi — do'stingizga yuboring!" : 'Havola pastdagi maydonda', ok ? 'ok' : 'info', 'link');
+  };
 
   clear(root);
   root.appendChild(
@@ -211,38 +475,63 @@ export function mountEditor(root: HTMLElement, app: App): () => void {
       'div',
       { class: 'page editor' },
       h('header', { class: 'page-head' }, h('button', { class: 'btn ghost', onclick: () => store.getState().go('menu') }, icon('back'), 'Menyu'), h('h1', null, 'Level muharriri')),
-      h('p', { class: 'muted' }, "Chorrahani yig'ing, keyin Tekshirish (validator + avtopilot) va Sinab ko'rish. JSON'ni nusxalab, campaign'ga qo'shish mumkin (docs/LEVEL_DESIGN.md)."),
-      form,
+      h(
+        'p',
+        { class: 'muted' },
+        "Chorrahani yig'ing: navbatlar, keyin keladigan mashinalar, belgilar, svetofor vaqtlari yoki regulirovshik. O'ngda avtopilot uni jonli o'ynab ko'rsatadi. " +
+          "Tekshirish — validator + avtopilot; havolani do'stingizga yuborsangiz, u ham shu bosqichni o'ynaydi.",
+      ),
       h(
         'div',
-        { class: 'form-row' },
-        h('button', { class: 'btn', onclick: () => { sfx.click(); check(true); } }, icon('check'), 'Tekshirish'),
-        h('button', { class: 'btn primary', onclick: () => { sfx.unlock(); const def = check(true); if (def) store.getState().playCustom(def); } }, icon('play'), "Sinab ko'rish"),
-        h('button', { class: 'btn', onclick: () => { json.value = JSON.stringify(toDef(state), null, 2); } }, 'JSON eksport'),
+        { class: 'editor-layout' },
         h(
-          'button',
-          {
-            class: 'btn',
-            onclick: () => {
-              try {
-                const def = JSON.parse(json.value) as LevelDef;
-                const v = validateLevel(def);
-                if (!v.ok) throw new Error(v.errors.join('; '));
-                change(() => (state = fromDef(def)));
-                store.getState().notify('JSON yuklandi', 'ok');
-              } catch (e) {
-                store.getState().notify(`JSON xatosi: ${(e as Error).message}`, 'err');
-              }
-            },
-          },
-          'JSON import',
+          'div',
+          { class: 'editor-main' },
+          form,
+          h(
+            'div',
+            { class: 'form-row editor-actions' },
+            h('button', { class: 'btn', onclick: () => { sfx.click(); check(true); } }, icon('check'), 'Tekshirish'),
+            h('button', { class: 'btn primary', onclick: () => { sfx.unlock(); const def = check(true); if (def) store.getState().playCustom(def); } }, icon('play'), "Sinab ko'rish"),
+            h('button', { class: 'btn', onclick: () => void shareLink() }, icon('link'), 'Havolani nusxalash'),
+            h('button', { class: 'btn', onclick: () => { json.value = JSON.stringify(toDef(state), null, 2); } }, 'JSON eksport'),
+            h(
+              'button',
+              {
+                class: 'btn',
+                onclick: () => {
+                  const r = parseImport(json.value);
+                  if (r.ok) {
+                    change(() => (state = fromDef(r.def)));
+                    store.getState().notify('Bosqich yuklandi', 'ok');
+                  } else store.getState().notify(`Import xatosi: ${r.error}`, 'err');
+                },
+              },
+              'Import (JSON / havola)',
+            ),
+            h('button', { class: 'btn ghost', onclick: () => change(() => (state = defaultState())) }, icon('restart'), 'Yangidan'),
+          ),
+          report,
+          json,
         ),
-        h('button', { class: 'btn ghost', onclick: () => change(() => (state = defaultState())) }, icon('restart'), 'Yangidan'),
+        h(
+          'aside',
+          { class: 'editor-preview card' },
+          h('div', { class: 'preview-head' }, h('b', null, icon('eye'), " Jonli ko'rinish"), ambPill, playBtn),
+          canvas,
+          previewStatus,
+        ),
       ),
-      report,
-      json,
     ),
   );
   render();
-  return () => undefined;
+  const ro = new ResizeObserver(() => renderer.resize());
+  ro.observe(canvas);
+  rebuildPreview();
+  raf = requestAnimationFrame(frame);
+  return () => {
+    cancelAnimationFrame(raf);
+    ro.disconnect();
+    if (previewTimer) clearTimeout(previewTimer);
+  };
 }

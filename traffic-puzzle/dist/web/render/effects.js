@@ -249,9 +249,9 @@ export class HeadlightCache {
         const local = [
             [0, -0.3],
             [0, 0.3],
-            [2.3, 0.95],
-            [2.6, 0],
-            [2.3, -0.95],
+            [1.9, 0.85],
+            [2.2, 0],
+            [1.9, -0.85],
         ];
         const pts = local.map(([f, r]) => {
             const x = c * f - sn * r;
@@ -270,8 +270,8 @@ export class HeadlightCache {
         const ctx = canvas.getContext('2d');
         ctx.setTransform(this.dpr, 0, 0, this.dpr, -minX * this.dpr, -minY * this.dpr);
         // far point of the beam (f = 2.4, r = 0) in sprite space
-        const farX = (c - sn) * 2.4 * s;
-        const farY = ((c + sn) * 2.4 * s) / 2;
+        const farX = (c - sn) * 2.1 * s;
+        const farY = ((c + sn) * 2.1 * s) / 2;
         const grad = ctx.createLinearGradient(0, 0, farX, farY);
         grad.addColorStop(0, 'rgba(255,238,196,0.55)');
         grad.addColorStop(0.45, 'rgba(255,232,180,0.22)');

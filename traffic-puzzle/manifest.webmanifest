@@ -1,0 +1,26 @@
+{
+  "name": "Chorraha Boshqaruvi — Traffic Puzzle",
+  "short_name": "Chorraha",
+  "description": "Yo'l harakati qoidalariga asoslangan izometrik chorraha boshqotirmasi: o'ng qo'l qoidasi, belgilar, svetofor, maxsus transport, aylanma va regulirovshik.",
+  "lang": "uz",
+  "dir": "ltr",
+  "id": "./",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0f172a",
+  "theme_color": "#0f172a",
+  "categories": ["games", "education"],
+  "icons": [
+    { "src": "assets/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "assets/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "assets/icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "assets/icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ],
+  "shortcuts": [
+    { "name": "Kunlik chorraha", "short_name": "Kunlik", "url": "./#/daily", "icons": [{ "src": "assets/icons/icon-192.png", "sizes": "192x192" }] },
+    { "name": "Cheksiz tirbandlik", "short_name": "Cheksiz", "url": "./#/endless/cross", "icons": [{ "src": "assets/icons/icon-192.png", "sizes": "192x192" }] },
+    { "name": "Bosqichlar", "url": "./#/levels", "icons": [{ "src": "assets/icons/icon-192.png", "sizes": "192x192" }] }
+  ]
+}

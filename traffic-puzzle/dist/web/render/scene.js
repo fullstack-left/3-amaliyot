@@ -213,7 +213,7 @@ function faceText(ctx, cam, face, x, y, z, text, size, color) {
         ctx.transform(s * 0.01, s * 0.005, 0, 0.95 * s * 0.01, cam.sx(x, y), cam.sy(x, y, z));
     else
         ctx.transform(s * 0.01, -s * 0.005, 0, 0.95 * s * 0.01, cam.sx(x, y), cam.sy(x, y, z));
-    ctx.font = `800 ${Math.round(size * 100)}px system-ui, sans-serif`;
+    ctx.font = `800 ${Math.round(size * 100)}px Roboto, system-ui, sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillStyle = color;
