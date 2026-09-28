@@ -31,6 +31,8 @@ export interface VehicleLook {
   readonly barF: number;
   readonly barZ: number;
   readonly topZ: number;
+  /** Emissive body (penalty flash): not affected by the ambience grade. */
+  readonly glow?: boolean;
 }
 
 export interface LookContext {
@@ -171,7 +173,7 @@ const redCache = new Map<string, VehicleLook>();
 export function redLook(l: VehicleLook): VehicleLook {
   let r = redCache.get(l.key);
   if (!r) {
-    r = { ...l, key: `${l.key}|RED`, color: '#ff2b2b', roof: '#ff5b5b' };
+    r = { ...l, key: `${l.key}|RED`, color: '#ff2b2b', roof: '#ff5b5b', glow: true };
     redCache.set(l.key, r);
   }
   return r;

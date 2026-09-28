@@ -15,13 +15,21 @@ export class Camera {
     width = 0;
     height = 0;
     dpr = 1;
-    /** Fit a world disc of `radius` into the viewport, leaving room for HUD bars. */
-    fit(width, height, dpr, radius, topPad = 0, bottomPad = 0) {
+    /**
+     * Fit the junction CONTENT into the viewport, leaving room for HUD bars.
+     *
+     * `extent` is how far along each arm (world units from the centre) must stay
+     * visible. Arms run along the screen diagonals, so an arm of length E spans
+     * ±E·s horizontally and ±E·s/2 vertically — the fit uses exactly that (plus
+     * headroom for vehicle/sign heights) instead of a bounding disc, which wasted
+     * ~40 % of a portrait phone screen.
+     */
+    fit(width, height, dpr, extent, topPad = 0, bottomPad = 0, maxScale = 72) {
         this.width = width;
         this.height = height;
         this.dpr = dpr;
         const availH = Math.max(100, height - topPad - bottomPad);
-        this.scale = Math.max(9, Math.min(width / (4 * radius), availH / (2 * radius + 1.4)));
+        this.scale = Math.max(9, Math.min((width - 16) / (2 * extent), availH / (extent + 1.7), maxScale));
         this.cx = width / 2;
         this.cy = topPad + availH / 2 + this.scale * 0.35;
     }

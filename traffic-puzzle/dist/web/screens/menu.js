@@ -5,7 +5,7 @@ import { GameEngine } from '../../core/engine.js';
 import { TICK_MS } from '../../core/kinematics.js';
 import { clear, h } from '../dom.js';
 import { icon } from '../icons.js';
-import { Renderer } from '../render/renderer.js';
+import { DEFAULT_RENDER_SETTINGS, Renderer } from '../render/renderer.js';
 import { nextLevel, totalStars } from '../save.js';
 const DEMO_LEVELS = [22, 31, 20, 47, 36, 50];
 export function mountMenu(root, app) {
@@ -18,7 +18,7 @@ export function mountMenu(root, app) {
     root.appendChild(h('div', { class: 'menu' }, canvas, h('div', { class: 'menu-panel' }, h('div', { class: 'logo' }, icon('light', 'logo-ic')), h('h1', null, 'Chorraha Boshqaruvi'), h('p', { class: 'subtitle' }, "Siz — chorrahaning ko'rinmas tartibga soluvchisisiz. Qoidani bilgan — birinchi o'tkazadi!"), h('div', { class: 'menu-stats' }, h('span', { title: 'Tangalar' }, icon('coin'), ` ${save.coins}`), h('span', { title: 'Yulduzlar' }, icon('star', 'on'), ` ${totalStars(save)} / ${LEVEL_COUNT * 3}`), h('span', { title: "O'tilgan bosqichlar" }, icon('flag'), ` ${Object.keys(save.progress).length} / ${LEVEL_COUNT}`)), h('div', { class: 'menu-buttons' }, btn('play', Object.keys(save.progress).length ? `Davom etish (${cont}-bosqich)` : "O'ynashni boshlash", () => store.getState().play(cont), 'btn primary big'), btn('map', 'Bosqichlar', () => store.getState().go('levels')), btn('car', 'Garaj', () => store.getState().go('garage')), btn('book', 'Qoidalar', () => store.getState().go('rules')), btn('wrench', 'Level muharriri', () => store.getState().go('editor')), btn('gear', 'Sozlamalar', () => store.getState().go('settings'))), h('p', { class: 'fineprint' }, "O'zbekiston yo'l harakati qoidalari mantig'iga asoslangan o'quv-boshqotirma o'yin."))));
     // background demo: the autoplay bot plays a real campaign level
     const renderer = new Renderer(canvas);
-    renderer.settings = { spriteCache: true, assist: false, controllerArrows: false, perf: false };
+    renderer.settings = { ...DEFAULT_RENDER_SETTINGS, assist: false };
     let idx = Math.floor(Math.random() * DEMO_LEVELS.length);
     let engine = new GameEngine(getLevel(DEMO_LEVELS[idx]));
     const lookCtx = () => ({ levelId: DEMO_LEVELS[idx], ownedModels: ['nexia3', 'cobalt', 'spark', 'gentra', 'damas', 'matiz'], hero: save.loadout });

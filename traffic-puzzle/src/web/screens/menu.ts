@@ -7,7 +7,7 @@ import { TICK_MS } from '../../core/kinematics.js';
 import type { App } from '../app.js';
 import { clear, h } from '../dom.js';
 import { icon, type IconName } from '../icons.js';
-import { Renderer } from '../render/renderer.js';
+import { DEFAULT_RENDER_SETTINGS, Renderer } from '../render/renderer.js';
 import { nextLevel, totalStars } from '../save.js';
 
 const DEMO_LEVELS = [22, 31, 20, 47, 36, 50];
@@ -56,7 +56,7 @@ export function mountMenu(root: HTMLElement, app: App): () => void {
 
   // background demo: the autoplay bot plays a real campaign level
   const renderer = new Renderer(canvas);
-  renderer.settings = { spriteCache: true, assist: false, controllerArrows: false, perf: false };
+  renderer.settings = { ...DEFAULT_RENDER_SETTINGS, assist: false };
   let idx = Math.floor(Math.random() * DEMO_LEVELS.length);
   let engine = new GameEngine(getLevel(DEMO_LEVELS[idx]));
   const lookCtx = () => ({ levelId: DEMO_LEVELS[idx], ownedModels: ['nexia3', 'cobalt', 'spark', 'gentra', 'damas', 'matiz'], hero: save.loadout });

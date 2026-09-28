@@ -76,7 +76,7 @@ export function mountPlay(root, app) {
     const bossArrows = () => store.getState().save.settings.controllerArrows || def.id === 10;
     const applySettings = () => {
         const s = store.getState().save.settings;
-        renderer.settings = { spriteCache: s.spriteCache, assist: s.assist, controllerArrows: bossArrows(), perf: s.perf };
+        renderer.settings = { spriteCache: s.spriteCache, assist: s.assist, controllerArrows: bossArrows(), perf: s.perf, effects: s.effects, keyHints: s.keyHints };
     };
     /** Civilian traffic = the common local car park + every model the player owns. */
     function heroLook() {
@@ -115,6 +115,7 @@ export function mountPlay(root, app) {
     // ---- events → feedback -----------------------------------------------------
     function onEvent(e) {
         const settings = store.getState().save.settings;
+        renderer.onEvent(e);
         switch (e.type) {
             case 'depart': {
                 sfx.go();

@@ -114,7 +114,7 @@ const redCache = new Map();
 export function redLook(l) {
     let r = redCache.get(l.key);
     if (!r) {
-        r = { ...l, key: `${l.key}|RED`, color: '#ff2b2b', roof: '#ff5b5b' };
+        r = { ...l, key: `${l.key}|RED`, color: '#ff2b2b', roof: '#ff5b5b', glow: true };
         redCache.set(l.key, r);
     }
     return r;
